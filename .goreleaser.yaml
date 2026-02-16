@@ -1,0 +1,112 @@
+version: 2
+
+project_name: codearena-core
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: codearena
+    main: ./cmd/codearena
+    binary: codearena
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: tar.gz
+    # use zip for windows archives
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+
+# Linux .deb and .rpm packages
+nfpms:
+  - id: codearena-pkg
+    package_name: codearena-core
+    vendor: CodeArena
+    homepage: https://github.com/codearena-platform/codearena-core
+    maintainer: Jackson Wendel <jackson@example.com>
+    description: CodeArena Core - Simulation and Game Logic Engine
+    license: MIT
+    formats:
+      - deb
+    contents:
+      - src: ./codearena
+        dst: /usr/bin/codearena
+        type: "config"
+
+# Windows MSI Installers
+msi:
+  - id: codearena-msi
+    name: CodeArena Core
+    wxs_template: |
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+          <Product Id="*" Name="CodeArena Core" Language="1033" Version="{{ .Version }}" Manufacturer="CodeArena" UpgradeCode="bb89ff61-4db9-4db8-a857-070d1b11ae2f">
+              <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+              <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+              <MediaTemplate EmbedCab="yes" />
+              <Feature Id="ProductFeature" Title="CodeArena" Level="1">
+                  <ComponentGroupRef Id="ProductComponents" />
+              </Feature>
+          </Product>
+          <Fragment>
+              <Directory Id="TARGETDIR" Name="SourceDir">
+                  <Directory Id="ProgramFilesFolder">
+                      <Directory Id="INSTALLFOLDER" Name="CodeArena" />
+                  </Directory>
+              </Directory>
+          </Fragment>
+          <Fragment>
+              <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+                  <Component Id="CodeArenaExecutable" Guid="*">
+                      <File Id="CodeArenaEXE" Source="codearena.exe" KeyPath="yes" />
+                  </Component>
+              </ComponentGroup>
+          </Fragment>
+      </Wix>
+
+# Homebrew for macOS
+brews:
+  - name: codearena
+    repository:
+      owner: codearena-platform
+      name: homebrew-tap
+    homepage: https://github.com/codearena-platform/codearena-core
+    description: CodeArena Core - Simulation and Game Logic Engine
+
+# Docker Multi-Arch
+dockers:
+  - image_templates:
+      - "codearena/core:{{ .Version }}-amd64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+  - image_templates:
+      - "codearena/core:{{ .Version }}-arm64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+
+docker_manifests:
+  - name_template: "codearena/core:{{ .Version }}"
+    image_templates:
+      - "codearena/core:{{ .Version }}-amd64"
+      - "codearena/core:{{ .Version }}-arm64"
+  - name_template: "codearena/core:latest"
+    image_templates:
+      - "codearena/core:{{ .Version }}-amd64"
+      - "codearena/core:{{ .Version }}-arm64"
