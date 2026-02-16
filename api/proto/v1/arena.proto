@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package codearena.v1;
+
+option go_package = "github.com/codearena-platform/codearena-core/pkg/api/v1";
+
+import "bot_api.proto";
+
+message ArenaConfig {
+  string id = 1;
+  string name = 2;
+  float width = 3;
+  float height = 4;
+  repeated Obstacle obstacles = 5;
+  repeated Zone zones = 6;
+  int32 max_bots = 7;
+  int64 match_duration_ticks = 8;
+}
+
+message Obstacle {
+  string id = 1;
+  Vector3 position = 2;
+  float radius = 3; // All obstacles are circular in v1
+  bool indestructible = 4;
+}
+
+message Zone {
+  string id = 1;
+  Vector3 position = 2;
+  float radius = 3;
+  string type = 4; // HEAL, ENERGY, HAZARD
+  float intensity = 5;
+}
+
+// --- gRPC Services ---
+
+service MatchService {
+  rpc CreateMatch(ArenaConfig) returns (MatchResponse);
+  rpc ListActiveMatches(Empty) returns (MatchList);
+  rpc ListMatches(Empty) returns (MatchList);
+  rpc WatchMatch(MatchRequest) returns (stream WorldState);
+  rpc RegisterBot(RegisterBotRequest) returns (RegisterBotResponse);
+  rpc GetMatchReplay(ReplayRequest) returns (ReplayData);
+  rpc GetMatchHighlights(ReplayRequest) returns (HighlightsData);
+}
+
+message ReplayRequest {
+  string match_id = 1;
+  int64 start_tick = 2;
+  int64 end_tick = 3;
+}
+
+message ReplayData {
+  string match_id = 1;
+  repeated SimulationEvent events = 2;
+}
+
+message HighlightMoment {
+  int64 tick = 1;
+  string type = 2; // DEATH, KILL, DAMAGE
+  string description = 3;
+}
+
+message HighlightsData {
+  string match_id = 1;
+  repeated HighlightMoment moments = 2;
+}
+
+message RegisterBotRequest {
+  string user_id = 1;
+  string name = 2;
+  string version = 3;
+  string source_code = 4; // Base64 encoded or raw string for v1
+  string language = 5;
+}
+
+message RegisterBotResponse {
+  string bot_id = 1;
+  string version_id = 2;
+  bool success = 3;
+  string message = 4;
+}
+
+message MatchRequest { string match_id = 1; }
+message MatchResponse { string match_id = 2; MatchStatus status = 3; }
+message MatchList { repeated MatchResponse matches = 1; }
+message Empty {}
+
+message StopSimulationRequest {
+  string match_id = 1;
+}
+
+message SimulationResponse {
+  MatchStatus status = 1;
+}
+
+service SimulationService {
+  // External control for starting/stopping the engine
+  rpc StartSimulation(ArenaConfig) returns (SimulationResponse);
+  rpc StopSimulation(StopSimulationRequest) returns (SimulationResponse);
+}

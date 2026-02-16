@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package codearena.v1;
+
+option go_package = "github.com/codearena-platform/codearena-core/pkg/api/v1";
+
+// Generic vector for 3D coordinates
+message Vector3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+// Global match status
+enum MatchStatus {
+  MATCH_STATUS_UNSPECIFIED = 0;
+  WAITING = 1;
+  RUNNING = 2;
+  FINISHED = 3;
+}
+
+// Information about a bot in the arena
+message BotState {
+  string id = 1;
+  string name = 2;
+  Vector3 position = 3;
+  float heading = 4;
+  float gun_heading = 5;
+  float radar_heading = 6;
+  float velocity = 7;
+  float energy = 8;
+  float hull = 9;
+  float heat = 10;
+  float shield_hp = 11;         // Remaining Shield points
+  bool is_stealthed = 12;       // If active stealth module
+  map<string, int32> cooldowns = 13; // Power-id to remaining ticks
+  string class = 14;            // Tank, Scout, Sniper
+  string team_id = 15;
+}
+
+// Event types emitted by the engine
+message SimulationEvent {
+  int64 tick = 1;
+  oneof event {
+    HitByBulletEvent hit_by_bullet = 2;
+    BulletHitTargetEvent bullet_hit_target = 3;
+    HitWallEvent hit_wall = 4;
+    HitRobotEvent hit_robot = 5;
+    ZoneEnteredEvent zone_entered = 6;
+    DeathEvent death = 7;
+    MatchFinishedEvent match_finished = 8;
+  }
+}
+
+message HitByBulletEvent { string victim_id = 1; string bullet_id = 2; float damage = 3; }
+message BulletHitTargetEvent { string bullet_id = 1; string target_id = 2; }
+message HitWallEvent { string bot_id = 1; }
+message HitRobotEvent { string bot_id = 1; string other_id = 2; }
+message ZoneEnteredEvent { string bot_id = 1; string zone_id = 2; string type = 3; }
+message DeathEvent { string bot_id = 1; string killer_id = 2; }
+message MatchFinishedEvent { string winner_id = 1; } // Added for completeness
+
+message BulletState {
+  string id = 1;
+  string owner_id = 2;
+  Vector3 position = 3;
+  float heading = 4;
+  float velocity = 5;
+  float power = 6;
+}
+
+message ZoneState {
+  float x = 1;
+  float y = 2;
+  float radius = 3;
+}
+
+// A single tick of the world
+message WorldState {
+  int64 tick = 1;
+  MatchStatus status = 2;
+  repeated BotState bots = 3;
+  repeated SimulationEvent events = 4;
+  repeated BulletState bullets = 5;
+  ZoneState zone = 6;
+}
+
+// Command intent from a bot for the next tick
+message BotIntent {
+  float move_distance = 1;      // + forward, - backward
+  float turn_degrees = 2;       // rotation
+  float gun_turn_degrees = 3;
+  float radar_turn_degrees = 4;
+  float fire_power = 5;         // 0.1 to 3.0
+  PowerType use_power = 6;
+}
+
+enum PowerType {
+  POWER_NONE = 0;
+  SHIELD = 1;
+  OVERCLOCK = 2;
+  STEALTH = 3;
+}
+
+// --- gRPC Services ---
+
+service BotService {
+  // Real-time stream of state updates
+  rpc Connect(stream BotIntent) returns (stream WorldState);
+}
+
+// SimulationService moved to arena.proto to avoid circular dependency

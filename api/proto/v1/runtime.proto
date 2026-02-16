@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package codearena.v1;
+
+option go_package = "github.com/codearena-platform/codearena-core/pkg/api/v1";
+
+import "bot_api.proto";
+import "arena.proto";
+
+// Service specific to the Runtime environment (Sandboxing)
+service RuntimeService {
+  // Request to start a bot container/process
+  rpc StartBot(StartBotRequest) returns (StartBotResponse);
+
+  // Request to stop a bot
+  rpc StopBot(StopBotRequest) returns (StopBotResponse);
+  
+  // Health check for runtime stats
+  rpc GetRuntimeStats(Empty) returns (RuntimeStats);
+}
+
+message StartBotRequest {
+  string bot_id = 1;
+  string image = 2;              // Docker image or runtime environment identifier
+  string source_code = 3;        // Code to execute (if applicable)
+  string environment_vars = 4;   // JSON string of env vars
+  string match_id = 5;
+  string game_server_url = 6;    // Where the bot should connect to
+}
+
+message StartBotResponse {
+  string container_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  bool queued = 4;
+  int32 queue_position = 5;
+}
+
+message StopBotRequest {
+  string bot_id = 1;
+  string container_id = 2;
+}
+
+message StopBotResponse {
+  bool success = 1;
+}
+
+message RuntimeStats {
+  int32 active_containers = 1;
+  int64 memory_usage_mb = 2;
+  float cpu_usage_percent = 3;
+}
