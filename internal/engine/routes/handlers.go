@@ -59,12 +59,17 @@ func (s *SimulationServer) Connect(stream pb.BotService_ConnectServer) error {
 func (s *SimulationServer) BroadcastState(st *pb.WorldState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, ch := range s.botChannels {
+
+	// 1. Broadcast to Bots (Filtered)
+	for botID, ch := range s.botChannels {
+		filteredState := s.engine.Physics.FilterStateForBot(botID, st)
 		select {
-		case ch <- st:
+		case ch <- filteredState:
 		default:
 		}
 	}
+
+	// 2. Broadcast to Dashboards (Full State)
 	for ch := range s.dashboardChannels {
 		select {
 		case ch <- st:

@@ -32,4 +32,9 @@ const (
 	// Global Constants
 	RadarRange  = 800.0
 	RobotRadius = 20.0 // Effective radius for collision/hit detection
+
+	// Zone Effects (per tick)
+	HealZoneAmount   = 0.1
+	EnergyZoneAmount = 0.5
+	HazardZoneDamage = 0.2
 )

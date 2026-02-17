@@ -49,7 +49,7 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 		intent := intents[robot.Id]
 		updatedRobot := pe.updateRobot(robot, arenaConfig, intent)
 
-		// Zone Damage
+		// Zone Damage (Shrink)
 		if newState.Zone != nil {
 			dx := updatedRobot.Position.X - newState.Zone.X
 			dy := updatedRobot.Position.Y - newState.Zone.Y
@@ -57,6 +57,37 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 
 			if dist > newState.Zone.Radius {
 				pe.applyDamage(updatedRobot, 0.5, newState)
+			}
+		}
+
+		// Arena Zones (Functional)
+		for _, zone := range arenaConfig.Zones {
+			dx := updatedRobot.Position.X - zone.Position.X
+			dy := updatedRobot.Position.Y - zone.Position.Y
+			dist := float32(math.Sqrt(float64(dx*dx + dy*dy)))
+
+			if dist <= zone.Radius {
+				switch zone.Type {
+				case "HEAL":
+					updatedRobot.Hull = float32(math.Min(100.0, float64(updatedRobot.Hull+HealZoneAmount)))
+				case "ENERGY":
+					updatedRobot.Energy += EnergyZoneAmount
+					// Clamp energy to max later in updateRobot (or we should do it here)
+				case "HAZARD":
+					pe.applyDamage(updatedRobot, HazardZoneDamage, newState)
+				}
+
+				// Emit Event
+				newState.Events = append(newState.Events, &pb.SimulationEvent{
+					Tick: newState.Tick,
+					Event: &pb.SimulationEvent_ZoneEntered{
+						ZoneEntered: &pb.ZoneEnteredEvent{
+							BotId:  updatedRobot.Id,
+							ZoneId: zone.Id,
+							Type:   zone.Type,
+						},
+					},
+				})
 			}
 		}
 
@@ -427,4 +458,114 @@ func (pe *PhysicsEngine) normalizeAngle(angle float32) float32 {
 		angle += 360
 	}
 	return angle
+}
+
+// FilterStateForBot creates a customized WorldState for a specific bot based on its sensors
+func (pe *PhysicsEngine) FilterStateForBot(botID string, fullState *pb.WorldState) *pb.WorldState {
+	var viewer *pb.BotState
+	for _, b := range fullState.Bots {
+		if b.Id == botID {
+			viewer = b
+			break
+		}
+	}
+
+	// If viewer not found (dead?), they see nothing or full state?
+	// Usually they see nothing if they are dead.
+	if viewer == nil {
+		return &pb.WorldState{
+			Tick:   fullState.Tick,
+			Status: fullState.Status,
+			Zone:   fullState.Zone,
+		}
+	}
+
+	filteredState := &pb.WorldState{
+		Tick:   fullState.Tick,
+		Status: fullState.Status,
+		Zone:   fullState.Zone,
+		Events: make([]*pb.SimulationEvent, 0),
+		Bots:   make([]*pb.BotState, 0),
+	}
+
+	// 1. Bots are always visible to themselves
+	filteredState.Bots = append(filteredState.Bots, viewer)
+
+	// 2. Filter other bots
+	for _, target := range fullState.Bots {
+		if target.Id == botID {
+			continue
+		}
+
+		dx := target.Position.X - viewer.Position.X
+		dy := target.Position.Y - viewer.Position.Y
+		dist := float32(math.Sqrt(float64(dx*dx + dy*dy)))
+
+		// Logic:
+		// - Close range: Always visible (Sensors)
+		// - Radar range: Visible if within FOV or Scanned
+		// - Stealth: Harder to see
+
+		visible := false
+		if dist < 150.0 { // Proximity Sensor
+			visible = true
+		} else if dist < RadarRange {
+			// Basic Radar Logic: Check FOV (Legacy behavior but per-bot now)
+			angleToTarget := math.Atan2(float64(target.Position.X-viewer.Position.X), float64(viewer.Position.Y-target.Position.Y))
+			angleToTargetDeg := float32(angleToTarget * 180.0 / math.Pi)
+			if angleToTargetDeg < 0 {
+				angleToTargetDeg += 360
+			}
+
+			diff := float32(math.Abs(float64(angleToTargetDeg - viewer.RadarHeading)))
+			if diff > 180 {
+				diff = 360 - diff
+			}
+
+			radarFOV := float32(TankRadarFOV)
+			if viewer.Class == "Scout" {
+				radarFOV = ScoutRadarFOV
+			} else if viewer.Class == "Sniper" {
+				radarFOV = SniperRadarFOV
+			}
+
+			if diff <= radarFOV/2.0 {
+				visible = true
+			}
+		}
+
+		if target.IsStealthed && dist > 100.0 {
+			visible = false // Stealth works unless very close
+		}
+
+		if visible {
+			filteredState.Bots = append(filteredState.Bots, target)
+		}
+	}
+
+	// 3. Filter Events (only relevant to the bot)
+	for _, ev := range fullState.Events {
+		relevant := false
+		// Broad relevance: Death of any bot is public?
+		// For now, let's say only events involving the viewer id are relevant
+		// OR events at visible locations.
+
+		if death := ev.GetDeath(); death != nil {
+			relevant = true // Deaths are public news
+		} else if hit := ev.GetHitByBullet(); hit != nil {
+			if hit.VictimId == botID {
+				relevant = true
+			}
+		} else if zone := ev.GetZoneEntered(); zone != nil {
+			if zone.BotId == botID {
+				relevant = true
+			}
+		}
+
+		if relevant {
+			filteredState.Events = append(filteredState.Events, ev)
+		}
+	}
+
+	return filteredState
 }

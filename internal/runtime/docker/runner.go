@@ -51,8 +51,9 @@ func (r *BotRunner) StartContainer(ctx context.Context, image string, botID stri
 
 	// Host Config
 	hostConfig := &container.HostConfig{
-		AutoRemove:  true,
-		NetworkMode: "bridge", // Isolated network
+		AutoRemove:     true,
+		ReadonlyRootfs: true, // Prevent bots from writing to the filesystem
+		NetworkMode:    "bridge",
 		Resources: container.Resources{
 			NanoCPUs:  500000000,         // 0.5 CPU
 			Memory:    512 * 1024 * 1024, // 512MB

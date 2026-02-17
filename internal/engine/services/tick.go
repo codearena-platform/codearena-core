@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/codearena-platform/codearena-core/internal/persistence"
@@ -65,9 +66,16 @@ func (e *SimulationEngine) Tick() *pb.WorldState {
 }
 
 func (e *SimulationEngine) getBotSliceInternal() []*pb.BotState {
+	// Sort IDs for determinism (Go map iteration is random)
+	ids := make([]string, 0, len(e.Bots))
+	for id := range e.Bots {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
 	slice := make([]*pb.BotState, 0, len(e.Bots))
-	for _, b := range e.Bots {
-		slice = append(slice, b)
+	for _, id := range ids {
+		slice = append(slice, e.Bots[id])
 	}
 	return slice
 }
@@ -126,6 +134,12 @@ func (e *SimulationEngine) checkWinCondition() {
 	if aliveCount == 0 && e.CurrentTick > 1000 {
 		e.Status = pb.MatchStatus_FINISHED
 		now := time.Now()
+
+		matchID := e.MatchID
+		if matchID == "" {
+			matchID = "match-" + now.Format("20060102-150405")
+		}
+
 		e.Events = append(e.Events, &pb.SimulationEvent{
 			Tick: e.CurrentTick,
 			Event: &pb.SimulationEvent_MatchFinished{
@@ -136,11 +150,11 @@ func (e *SimulationEngine) checkWinCondition() {
 		// Persistence Logic
 		if e.DB != nil {
 			match := &persistence.Match{
-				ID:          "match-" + time.Now().Format("20060102-150405"), // TODO: Use real Match ID
+				ID:          matchID,
 				Status:      "FINISHED",
 				ArenaWidth:  e.ArenaConfig.Width,
 				ArenaHeight: e.ArenaConfig.Height,
-				CreatedAt:   time.Now().Add(-time.Duration(e.CurrentTick) * 16 * time.Millisecond),
+				CreatedAt:   now.Add(-time.Duration(e.CurrentTick) * 16 * time.Millisecond),
 				FinishedAt:  &now,
 			}
 			e.DB.CreateMatch(match)
