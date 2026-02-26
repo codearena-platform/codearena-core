@@ -18,9 +18,15 @@ func main() {
 		engineAddr = "localhost:50051"
 	}
 
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
 	cfg := realtime.Config{
 		Port:       port,
 		EngineAddr: engineAddr,
+		RedisAddr:  redisAddr,
 	}
 
 	if err := realtime.Start(cfg); err != nil {
