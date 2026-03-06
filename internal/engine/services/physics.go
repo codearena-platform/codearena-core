@@ -24,6 +24,13 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 		Events:  make([]*pb.SimulationEvent, 0),
 	}
 
+	// 0. Initialize Quadtree for optimizations
+	qtBoundary := Rectangle{X: arenaConfig.Width / 2, Y: arenaConfig.Height / 2, W: arenaConfig.Width / 2, H: arenaConfig.Height / 2}
+	qt := NewQuadtree(qtBoundary, 4)
+	for _, b := range state.Bots {
+		qt.Insert(b)
+	}
+
 	// 1. Update Zone (Shrink)
 	if state.Zone != nil {
 		newState.Zone = &pb.ZoneState{
@@ -33,13 +40,6 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 		}
 		if newState.Zone.Radius < 50.0 {
 			newState.Zone.Radius = 50.0 // Min radius
-		}
-	}
-
-	if newState.Tick%60 == 0 {
-		for _, b := range state.Bots {
-			log.Printf("PHYSICS: Bot %s at (%.1f, %.1f), Hull: %.1f Energy: %.1f",
-				b.Id, b.Position.X, b.Position.Y, b.Hull, b.Energy)
 		}
 	}
 
@@ -72,12 +72,10 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 					updatedRobot.Hull = float32(math.Min(100.0, float64(updatedRobot.Hull+HealZoneAmount)))
 				case "ENERGY":
 					updatedRobot.Energy += EnergyZoneAmount
-					// Clamp energy to max later in updateRobot (or we should do it here)
 				case "HAZARD":
 					pe.applyDamage(updatedRobot, HazardZoneDamage, newState)
 				}
 
-				// Emit Event
 				newState.Events = append(newState.Events, &pb.SimulationEvent{
 					Tick: newState.Tick,
 					Event: &pb.SimulationEvent_ZoneEntered{
@@ -99,7 +97,7 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 				OwnerId:  robot.Id,
 				Position: &pb.Vector3{X: updatedRobot.Position.X, Y: updatedRobot.Position.Y, Z: 0},
 				Heading:  updatedRobot.GunHeading,
-				Velocity: 20.0, // Reduced from 40 to ensure hit detection
+				Velocity: 20.0,
 				Power:    intent.FirePower,
 			})
 			updatedRobot.Heat += 1.0 + (intent.FirePower / 5.0)
@@ -113,28 +111,29 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 			}
 		}
 
-		// Robot Destruction Check
 		if updatedRobot.Hull <= 0 {
 			pe.processDeath(updatedRobot, newState)
 			continue
 		}
 
 		newState.Bots = append(newState.Bots, updatedRobot)
-
-		newState.Bots = append(newState.Bots, updatedRobot)
 		activeRobots = append(activeRobots, updatedRobot)
 	}
 
-	// 3. Update Bullets & Collision Detection (Bullet vs Robot)
+	// 3. Update Bullets & Collision Detection (Bullet vs Robot via Quadtree)
 	finalBullets := make([]*pb.BulletState, 0)
 	for _, bullet := range state.Bullets {
 		newX := bullet.Position.X + float32(math.Sin(float64(bullet.Heading*math.Pi/180.0)))*bullet.Velocity
 		newY := bullet.Position.Y - float32(math.Cos(float64(bullet.Heading*math.Pi/180.0)))*bullet.Velocity
 
 		hit := false
-		for _, robot := range newState.Bots {
+		bulletRange := Rectangle{X: newX, Y: newY, W: RobotRadius, H: RobotRadius}
+		var nearbyBots []*pb.BotState
+		qt.Query(bulletRange, &nearbyBots)
+
+		for _, robot := range nearbyBots {
 			if robot.Id == bullet.OwnerId {
-				continue // No self-harm
+				continue
 			}
 
 			dx := newX - robot.Position.X
@@ -142,8 +141,6 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 			dist := float32(math.Sqrt(float64(dx*dx + dy*dy)))
 
 			if dist < RobotRadius {
-				// HIT!
-				log.Printf("HIT! Bullet %s hit Robot %s at (%.1f, %.1f). Dist: %.2f", bullet.Id, robot.Id, robot.Position.X, robot.Position.Y, dist)
 				pe.applyDamage(robot, bullet.Power, newState)
 				newState.Events = append(newState.Events, &pb.SimulationEvent{
 					Tick: newState.Tick,
@@ -156,25 +153,12 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 					},
 				})
 
-				// Immediate Death Check after Bullet Hit
 				if robot.Hull <= 0 {
 					pe.processDeath(robot, newState)
 				}
-
 				hit = true
 				break
 			}
-		}
-
-		// Re-filter bots to remove dead ones after bullet hits
-		if hit {
-			aliveBots := make([]*pb.BotState, 0)
-			for _, b := range newState.Bots {
-				if b.Hull > 0 {
-					aliveBots = append(aliveBots, b)
-				}
-			}
-			newState.Bots = aliveBots
 		}
 
 		if !hit && newX >= 0 && newX <= arenaConfig.Width && newY >= 0 && newY <= arenaConfig.Height {
@@ -190,11 +174,16 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 	}
 	newState.Bullets = append(newState.Bullets, finalBullets...)
 
-	// 4. Robot-Robot Collision Resolution
-	for i := 0; i < len(activeRobots); i++ {
-		for j := i + 1; j < len(activeRobots); j++ {
-			r1 := activeRobots[i]
-			r2 := activeRobots[j]
+	// 4. Robot-Robot Collision Resolution via Quadtree
+	for _, r1 := range activeRobots {
+		collisionRange := Rectangle{X: r1.Position.X, Y: r1.Position.Y, W: RobotRadius * 2, H: RobotRadius * 2}
+		var nearbyBots []*pb.BotState
+		qt.Query(collisionRange, &nearbyBots)
+
+		for _, r2 := range nearbyBots {
+			if r1.Id == r2.Id {
+				continue
+			}
 
 			dx := float64(r1.Position.X - r2.Position.X)
 			dy := float64(r1.Position.Y - r2.Position.Y)
@@ -221,17 +210,20 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 		}
 	}
 
-	// 5. Radar Scanning Logic
+	// 5. Radar Scanning Logic via Quadtree
 	for _, scanner := range activeRobots {
 		scannerFOV := float32(TankRadarFOV)
-		switch scanner.Class {
-		case "Scout":
+		if scanner.Class == "Scout" {
 			scannerFOV = ScoutRadarFOV
-		case "Sniper":
+		} else if scanner.Class == "Sniper" {
 			scannerFOV = SniperRadarFOV
 		}
 
-		for _, target := range activeRobots {
+		radarQueryRange := Rectangle{X: scanner.Position.X, Y: scanner.Position.Y, W: RadarRange, H: RadarRange}
+		var nearbyBots []*pb.BotState
+		qt.Query(radarQueryRange, &nearbyBots)
+
+		for _, target := range nearbyBots {
 			if scanner.Id == target.Id {
 				continue
 			}
@@ -244,7 +236,6 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 				continue
 			}
 
-			// Stealth integration: Stealth reduces visibility
 			effectiveRange := float32(RadarRange)
 			if target.IsStealthed {
 				effectiveRange = RadarRange * 0.4
@@ -253,31 +244,19 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 				}
 			}
 
-			// Calculate angle to target
 			angleToTarget := math.Atan2(float64(target.Position.X-scanner.Position.X), float64(scanner.Position.Y-target.Position.Y))
 			angleToTargetDeg := float32(angleToTarget * 180.0 / math.Pi)
 			if angleToTargetDeg < 0 {
 				angleToTargetDeg += 360
 			}
 
-			// Compare with RadarHeading
 			diff := float32(math.Abs(float64(angleToTargetDeg - scanner.RadarHeading)))
 			if diff > 180 {
 				diff = 360 - diff
 			}
 
 			if diff <= scannerFOV/2.0 {
-				// RobotScanned event seems missing in new proto, or handled differently.
-				// For now, if we need it, we should add ZoneEntered or similar.
-				// But looking at proto, there is no generic RobotScanned.
-				// We'll skip adding it for now to fix build, or use a custom event if needed.
-				// LEGACY:
-				// newState.Events = append(newState.Events, &pb.BattleEvent{
-				// 	Type:    "ROBOT_SCANNED",
-				// 	BotId:   scanner.Id,
-				// 	OtherId: target.Id,
-				// 	Tick:    newState.Tick,
-				// })
+				// Event omitted per current proto limitations in existing code
 			}
 		}
 	}
@@ -568,4 +547,104 @@ func (pe *PhysicsEngine) FilterStateForBot(botID string, fullState *pb.WorldStat
 	}
 
 	return filteredState
+}
+
+// --- Quadtree Implementation for Spatial Partitioning ---
+
+type Rectangle struct {
+	X, Y, W, H float32
+}
+
+func (r Rectangle) Contains(b *pb.BotState) bool {
+	return b.Position.X >= r.X-r.W && b.Position.X <= r.X+r.W &&
+		b.Position.Y >= r.Y-r.H && b.Position.Y <= r.Y+r.H
+}
+
+func (r Rectangle) Intersects(other Rectangle) bool {
+	return !(other.X-other.W > r.X+r.W ||
+		other.X+other.W < r.X-r.W ||
+		other.Y-other.H > r.Y+r.H ||
+		other.Y+other.H < r.Y-r.H)
+}
+
+type Quadtree struct {
+	Boundary       Rectangle
+	Capacity       int
+	Bots           []*pb.BotState
+	Divided        bool
+	NW, NE, SW, SE *Quadtree
+}
+
+func NewQuadtree(boundary Rectangle, capacity int) *Quadtree {
+	return &Quadtree{
+		Boundary: boundary,
+		Capacity: capacity,
+		Bots:     make([]*pb.BotState, 0),
+		Divided:  false,
+	}
+}
+
+func (qt *Quadtree) Subdivide() {
+	x, y, w, h := qt.Boundary.X, qt.Boundary.Y, qt.Boundary.W/2, qt.Boundary.H/2
+	qt.NW = NewQuadtree(Rectangle{x - w, y - h, w, h}, qt.Capacity)
+	qt.NE = NewQuadtree(Rectangle{x + w, y - h, w, h}, qt.Capacity)
+	qt.SW = NewQuadtree(Rectangle{x - w, y + h, w, h}, qt.Capacity)
+	qt.SE = NewQuadtree(Rectangle{x + w, y + h, w, h}, qt.Capacity)
+	qt.Divided = true
+}
+
+func (qt *Quadtree) Insert(bot *pb.BotState) bool {
+	if !qt.Boundary.Contains(bot) {
+		return false
+	}
+
+	if !qt.Divided {
+		if len(qt.Bots) < qt.Capacity {
+			qt.Bots = append(qt.Bots, bot)
+			return true
+		}
+		qt.Subdivide()
+		for _, b := range qt.Bots {
+			qt.insertToChildren(b)
+		}
+		qt.Bots = nil
+	}
+
+	return qt.insertToChildren(bot)
+}
+
+func (qt *Quadtree) insertToChildren(bot *pb.BotState) bool {
+	if qt.NW.Insert(bot) {
+		return true
+	}
+	if qt.NE.Insert(bot) {
+		return true
+	}
+	if qt.SW.Insert(bot) {
+		return true
+	}
+	if qt.SE.Insert(bot) {
+		return true
+	}
+	return false
+}
+
+func (qt *Quadtree) Query(rangeRect Rectangle, found *[]*pb.BotState) {
+	if !qt.Boundary.Intersects(rangeRect) {
+		return
+	}
+
+	if qt.Divided {
+		qt.NW.Query(rangeRect, found)
+		qt.NE.Query(rangeRect, found)
+		qt.SW.Query(rangeRect, found)
+		qt.SE.Query(rangeRect, found)
+		return
+	}
+
+	for _, b := range qt.Bots {
+		if rangeRect.Contains(b) {
+			*found = append(*found, b)
+		}
+	}
 }
