@@ -44,7 +44,7 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 	}
 
 	// 2. Update Robots & Handle Firing & Zone Damage
-	activeRobots := make([]*pb.BotState, 0, len(state.Bots))
+	activeRobotsMap := make(map[string]*pb.BotState)
 	for _, robot := range state.Bots {
 		intent := intents[robot.Id]
 		updatedRobot := pe.updateRobot(robot, arenaConfig, intent)
@@ -116,8 +116,7 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 			continue
 		}
 
-		newState.Bots = append(newState.Bots, updatedRobot)
-		activeRobots = append(activeRobots, updatedRobot)
+		activeRobotsMap[updatedRobot.Id] = updatedRobot
 	}
 
 	// 3. Update Bullets & Collision Detection (Bullet vs Robot via Quadtree)
@@ -131,30 +130,41 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 		var nearbyBots []*pb.BotState
 		qt.Query(bulletRange, &nearbyBots)
 
-		for _, robot := range nearbyBots {
-			if robot.Id == bullet.OwnerId {
+		for _, robotInOldState := range nearbyBots {
+			if robotInOldState.Id == bullet.OwnerId {
 				continue
 			}
 
-			dx := newX - robot.Position.X
-			dy := newY - robot.Position.Y
+			// Get the updated robot record
+			updatedRobot, exists := activeRobotsMap[robotInOldState.Id]
+			if !exists {
+				// Robot is already dead this tick
+				continue
+			}
+
+			// We use old positions for collision detection to be consistent with Quadtree
+			// or we could use updated positions. Given current logic, let's stick to OLD for now
+			// but apply damage to NEW.
+			dx := newX - robotInOldState.Position.X
+			dy := newY - robotInOldState.Position.Y
 			dist := float32(math.Sqrt(float64(dx*dx + dy*dy)))
 
 			if dist < RobotRadius {
-				pe.applyDamage(robot, bullet.Power, newState)
+				pe.applyDamage(updatedRobot, bullet.Power, newState)
 				newState.Events = append(newState.Events, &pb.SimulationEvent{
 					Tick: newState.Tick,
 					Event: &pb.SimulationEvent_HitByBullet{
 						HitByBullet: &pb.HitByBulletEvent{
-							VictimId: robot.Id,
+							VictimId: updatedRobot.Id,
 							BulletId: bullet.Id,
 							Damage:   bullet.Power,
 						},
 					},
 				})
 
-				if robot.Hull <= 0 {
-					pe.processDeath(robot, newState)
+				if updatedRobot.Hull <= 0 {
+					pe.processDeath(updatedRobot, newState)
+					delete(activeRobotsMap, updatedRobot.Id)
 				}
 				hit = true
 				break
@@ -173,6 +183,13 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 		}
 	}
 	newState.Bullets = append(newState.Bullets, finalBullets...)
+
+	// Populate final bots slice and active robots for remaining logic
+	activeRobots := make([]*pb.BotState, 0, len(activeRobotsMap))
+	for _, b := range activeRobotsMap {
+		newState.Bots = append(newState.Bots, b)
+		activeRobots = append(activeRobots, b)
+	}
 
 	// 4. Robot-Robot Collision Resolution via Quadtree
 	for _, r1 := range activeRobots {
