@@ -65,8 +65,46 @@ CodeArena Core can be configured via flags or environment variables (12-factor a
 | `CODEARENA_PORT` | `--port` | `8080` | HTTP/WebSocket port |
 | `CODEARENA_GRPC_PORT` | `--grpc-port` | `50051` | gRPC Service port |
 | `CODEARENA_DB_PATH` | `--db-path` | `codearena.db` | Path to SQLite DB file |
-| `JWT_SECRET` | N/A | *Required* | Secret for validating WS tokens |
-| `REDIS_ADDR` | N/A | `localhost:6379` | Redis address (if scaling) |
+| `JWT_SECRET` | N/A | *Required* | Secret for validating WebSocket access tokens (HS256) |
+| `JWT_ISSUER` | N/A | `codearena` | Expected JWT issuer |
+| `JWT_AUDIENCE` | N/A | `codearena-clients` | Expected JWT audience |
+| `WS_ALLOWED_ORIGINS` | N/A | *same-origin* | Comma-separated WebSocket origin allowlist |
+| `RUNTIME_AUTH_TOKEN` | N/A | *Required* | Shared secret for all Runtime gRPC calls |
+| `RUNTIME_ALLOW_INSECURE` | N/A | `false` | Local-dev only opt-out from the token requirement |
+
+### Runtime and WebSocket security
+
+The Runtime gRPC API requires `RUNTIME_AUTH_TOKEN`. Clients send it as
+`Authorization: Bearer <token>` (or `x-runtime-token`). gRPC reflection is only
+registered when the explicit local-development opt-out is active. In production
+(`APP_ENV=production` or `CODEARENA_ENV=production`) the opt-out is refused.
+
+For local development only, both the token and reflection can be disabled with:
+
+```bash
+export RUNTIME_ALLOW_INSECURE=true
+```
+
+Every bot container runs as a non-root user with all capabilities dropped,
+no-new-privileges, Docker's default seccomp profile, a read-only root filesystem
+(plus a small `tmpfs` at `/tmp`), 512 MiB memory (no swap), 0.5 CPU, 64 PIDs, a
+start timeout and a 5-minute execution deadline. Containers are removed on stop,
+on failed start and when the deadline expires. Optional overrides:
+`RUNTIME_BOT_MEMORY_BYTES`, `RUNTIME_BOT_NANO_CPUS`, `RUNTIME_BOT_PIDS_LIMIT`,
+`RUNTIME_BOT_NETWORK` (default `none`), `RUNTIME_BOT_TIMEOUT`,
+`RUNTIME_BOT_START_TIMEOUT`, `RUNTIME_BOT_STOP_TIMEOUT`, `RUNTIME_BOT_USER`,
+`RUNTIME_READONLY_ROOTFS`, `RUNTIME_SECCOMP_PROFILE`, `RUNTIME_ALLOWED_IMAGES`
+(comma-separated exact references) and `RUNTIME_REQUIRE_DIGEST`. Setting an
+image allowlist requires digest-pinned references (for example
+`codearena/bot-go@sha256:...`) by default.
+
+Note: with the default `RUNTIME_BOT_NETWORK=none`, bots cannot reach the game
+server over the network. Set an explicit Docker network only for trusted
+local development.
+
+WebSocket clients must send `Authorization: Bearer <JWT>`; query-string tokens
+are rejected. Tokens must be HS256 and include `exp`, `iss` and `aud`. Browser
+origins must match `WS_ALLOWED_ORIGINS` or the request host.
 
 ## 🏗️ Architecture
 

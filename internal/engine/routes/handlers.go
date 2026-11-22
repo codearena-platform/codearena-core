@@ -33,13 +33,21 @@ func (s *SimulationServer) Connect(stream pb.BotService_ConnectServer) error {
 	s.mu.Unlock()
 
 	defer func() {
+		// BroadcastState only sends while holding s.mu; deleting first means no
+		// sender can race with closing the channel.
 		s.mu.Lock()
 		delete(s.botChannels, botID)
+		close(out)
 		s.mu.Unlock()
 	}()
 
+	// Recv is unblocked by gRPC when the stream context is canceled. It has its
+	// own exit path so a failed Send cannot leave this goroutine behind.
 	go func() {
 		for {
+			if stream.Context().Err() != nil {
+				return
+			}
 			in, err := stream.Recv()
 			if err != nil {
 				return
@@ -48,12 +56,19 @@ func (s *SimulationServer) Connect(stream pb.BotService_ConnectServer) error {
 		}
 	}()
 
-	for st := range out {
-		if err := stream.Send(st); err != nil {
-			return err
+	for {
+		select {
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		case st, ok := <-out:
+			if !ok {
+				return nil
+			}
+			if err := stream.Send(st); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
 }
 
 func (s *SimulationServer) BroadcastState(st *pb.WorldState) {

@@ -7,6 +7,8 @@ import (
 
 	"github.com/codearena-platform/codearena-core/internal/runtime/docker"
 	pb "github.com/codearena-platform/codearena-core/pkg/api/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type BotRunner interface {
@@ -36,6 +38,9 @@ func NewRuntimeServiceWithRunner(runner BotRunner, maxBots int) *RuntimeService 
 }
 
 func (s *RuntimeService) StartBot(ctx context.Context, req *pb.StartBotRequest) (*pb.StartBotResponse, error) {
+	if req == nil || req.BotId == "" || req.Image == "" {
+		return &pb.StartBotResponse{Success: false, ErrorMessage: "bot_id and image are required"}, nil
+	}
 	slog.Info("Request to start bot", "bot_id", req.BotId, "image", req.Image, "match_id", req.MatchId)
 
 	env := []string{
@@ -69,20 +74,30 @@ func (s *RuntimeService) StartBot(ctx context.Context, req *pb.StartBotRequest) 
 }
 
 func (s *RuntimeService) StopBot(ctx context.Context, req *pb.StopBotRequest) (*pb.StopBotResponse, error) {
-	if req.ContainerId == "" {
-		return &pb.StopBotResponse{Success: false}, fmt.Errorf("container_id is required")
+	if req == nil || req.ContainerId == "" {
+		return &pb.StopBotResponse{Success: false}, status.Error(codes.InvalidArgument, "container_id is required")
 	}
 
-	err := s.runner.StopContainer(ctx, req.ContainerId)
-	if err != nil {
+	// Never let a caller stop a container that this runtime did not create for
+	// the requested bot. The scheduler is the authoritative bot -> container map.
+	botID := req.BotId
+	if botID == "" {
+		found, ok := s.scheduler.BotForContainer(req.ContainerId)
+		if !ok {
+			return &pb.StopBotResponse{Success: false}, status.Error(codes.PermissionDenied, "container is not managed by this runtime")
+		}
+		botID = found
+	} else if !s.scheduler.OwnedContainer(botID, req.ContainerId) {
+		return &pb.StopBotResponse{Success: false}, status.Error(codes.PermissionDenied, "container does not belong to bot")
+	}
+
+	if err := s.runner.StopContainer(ctx, req.ContainerId); err != nil {
 		slog.Error("Error stopping container", "container_id", req.ContainerId, "error", err)
 		return &pb.StopBotResponse{Success: false}, nil
 	}
 
 	// Notify scheduler that a slot is free
-	if req.BotId != "" {
-		s.scheduler.NotifyStop(req.BotId)
-	}
+	s.scheduler.NotifyStop(botID)
 
 	return &pb.StopBotResponse{Success: true}, nil
 }

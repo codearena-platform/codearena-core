@@ -10,13 +10,26 @@ import (
 )
 
 func (s *SimulationServer) StartSimulation(ctx context.Context, cfg *pb.ArenaConfig) (*pb.SimulationResponse, error) {
+	s.mu.Lock()
+	if s.loop != nil {
+		s.loop.Stop()
+	}
 	loop := services.NewGameLoop(s.engine, s.TickRate, s.BroadcastState)
-	loop.Start()
+	s.loop = loop
+	s.mu.Unlock()
 
+	loop.Start()
 	return &pb.SimulationResponse{Status: pb.MatchStatus_RUNNING}, nil
 }
 
 func (s *SimulationServer) StopSimulation(ctx context.Context, req *pb.StopSimulationRequest) (*pb.SimulationResponse, error) {
+	s.mu.Lock()
+	loop := s.loop
+	s.loop = nil
+	s.mu.Unlock()
+	if loop != nil {
+		loop.Stop()
+	}
 	return &pb.SimulationResponse{Status: pb.MatchStatus_FINISHED}, nil
 }
 
@@ -29,15 +42,23 @@ func (s *SimulationServer) WatchMatch(req *pb.MatchRequest, stream pb.MatchServi
 	defer func() {
 		s.mu.Lock()
 		delete(s.dashboardChannels, out)
+		close(out)
 		s.mu.Unlock()
 	}()
 
-	for st := range out {
-		if err := stream.Send(st); err != nil {
-			return err
+	for {
+		select {
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		case st, ok := <-out:
+			if !ok {
+				return nil
+			}
+			if err := stream.Send(st); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
 }
 
 func (s *SimulationServer) ListActiveMatches(ctx context.Context, req *pb.Empty) (*pb.MatchList, error) {

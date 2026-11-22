@@ -16,6 +16,7 @@ type SimulationServer struct {
 	mu                sync.Mutex
 	botChannels       map[string]chan *pb.WorldState
 	dashboardChannels map[chan *pb.WorldState]bool
+	loop              *services.GameLoop
 	TickRate          time.Duration
 }
 
