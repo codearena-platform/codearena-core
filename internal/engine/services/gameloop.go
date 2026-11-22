@@ -2,6 +2,7 @@ package services
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 
 	pb "github.com/codearena-platform/codearena-core/pkg/api/v1"
@@ -10,9 +11,10 @@ import (
 type GameLoop struct {
 	Engine    *SimulationEngine
 	Ticker    *time.Ticker
-	StopChan  chan bool
+	StopChan  chan struct{}
 	Broadcast func(*pb.WorldState)
 	TickRate  time.Duration
+	stopOnce  sync.Once
 }
 
 func NewGameLoop(engine *SimulationEngine, tickRate time.Duration, broadcast func(*pb.WorldState)) *GameLoop {
@@ -22,7 +24,7 @@ func NewGameLoop(engine *SimulationEngine, tickRate time.Duration, broadcast fun
 	return &GameLoop{
 		Engine:    engine,
 		Broadcast: broadcast,
-		StopChan:  make(chan bool),
+		StopChan:  make(chan struct{}),
 		TickRate:  tickRate,
 	}
 }
@@ -60,8 +62,8 @@ func (gl *GameLoop) Start() {
 	go gl.Run()
 }
 
+// Stop closes the stop channel so every waiter is released immediately and no
+// goroutine is left blocked on a send to a channel nobody reads anymore.
 func (gl *GameLoop) Stop() {
-	go func() {
-		gl.StopChan <- true
-	}()
+	gl.stopOnce.Do(func() { close(gl.StopChan) })
 }

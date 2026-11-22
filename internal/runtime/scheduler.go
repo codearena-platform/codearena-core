@@ -122,6 +122,27 @@ func (s *Scheduler) processQueue() {
 	}
 }
 
+// OwnedContainer reports whether containerID belongs to botID. A bot whose
+// container is still starting has no container ID and owns nothing yet.
+func (s *Scheduler) OwnedContainer(botID, containerID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.active[botID]
+	return ok && id != "pending_start" && id == containerID
+}
+
+// BotForContainer looks up the bot that owns a container ID.
+func (s *Scheduler) BotForContainer(containerID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for botID, id := range s.active {
+		if id != "pending_start" && id == containerID {
+			return botID, true
+		}
+	}
+	return "", false
+}
+
 func (s *Scheduler) GetActiveCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
