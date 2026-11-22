@@ -49,6 +49,7 @@ Modes:
 		startArenaWidth = float32(viper.GetFloat64("arena-width"))
 		startArenaHeight = float32(viper.GetFloat64("arena-height"))
 		startTickRate = viper.GetInt("tick-rate")
+		startRedisAddr = viper.GetString("redis-addr")
 		startDbPath = viper.GetString("db-path")
 
 		localRuntime, runtimeAddr := determineRuntimeMode(startRuntimeAddr)

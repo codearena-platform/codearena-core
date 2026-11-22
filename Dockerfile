@@ -1,5 +1,5 @@
 # Build Stage
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
@@ -10,25 +10,27 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the binary
-# CGO_ENABLED=0 for a static binary (pure-go sqlite helps here)
-RUN CGO_ENABLED=0 GOOS=linux go build -o codearena ./cmd/codearena
+# Build the binary. CGO_ENABLED=0 keeps the binary static for the pure-Go SQLite driver.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/codearena ./cmd/codearena
 
 # Final Stage
-FROM alpine:latest
+FROM alpine:3.20
 
-# Install CA certificates for secure connections
-RUN apk --no-cache add ca-certificates
+# ca-certificates is needed for outbound TLS (OAuth, model downloads, etc.).
+RUN apk --no-cache add ca-certificates \
+    && mkdir -p /data \
+    && chown -R 65532:65532 /data
 
-WORKDIR /root/
+WORKDIR /app
+COPY --from=builder /out/codearena /app/codearena
 
-# Copy the binary from the builder stage
-COPY --from=builder /app/codearena .
+# gRPC API, web/dashboard API and realtime WebSocket port.
+EXPOSE 50051 50052 8081
 
-# Expose ports (gRPC and Realtime/WebSocket)
-EXPOSE 50051 8080
+# SQLite needs a writable /data directory, provided by the VOLUME above.
+VOLUME /data
 
-# Run the application
-# Default to "start" command which orchestrates everything
-ENTRYPOINT ["./codearena", "start"]
-CMD ["--db-path", "/data/codearena.db"]
+USER 65532:65532
+
+ENTRYPOINT ["/app/codearena"]
+CMD ["start", "--db-path", "/data/codearena.db"]

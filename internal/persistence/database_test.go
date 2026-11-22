@@ -52,8 +52,8 @@ func TestDatabase_Highlights(t *testing.T) {
 	matchID := "match-highlight"
 	events := []EventLog{
 		{MatchID: matchID, Tick: 10, Type: "Hit", Payload: "{}"},
-		{MatchID: matchID, Tick: 50, Type: "*pb.SimulationEvent_Death", Payload: "{}"},
-		{MatchID: matchID, Tick: 100, Type: "*pb.SimulationEvent_MatchFinished", Payload: "{}"},
+		{MatchID: matchID, Tick: 50, Type: EventTypeDeath, Payload: "{}"},
+		{MatchID: matchID, Tick: 100, Type: EventTypeMatchFinished, Payload: "{}"},
 	}
 	db.SaveEvents(events)
 

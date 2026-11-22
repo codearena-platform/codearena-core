@@ -67,10 +67,8 @@ func (d *Database) GetEvents(matchID string, startTick, endTick int64) ([]EventL
 
 func (d *Database) GetHighlights(matchID string) ([]EventLog, error) {
 	var events []EventLog
-	// Filter for "interesting" events: Deaths and Hits
-	// In v1, we check the 'type' string stored in DB
-	interestingTypes := []string{"*pb.SimulationEvent_Death", "*pb.SimulationEvent_MatchFinished"}
-	err := d.db.Where("match_id = ? AND type IN ?", matchID, interestingTypes).
+	// Filter for "interesting" events (deaths and match finishes).
+	err := d.db.Where("match_id = ? AND type IN ?", matchID, HighlightEventTypes).
 		Order("tick asc").Find(&events).Error
 	return events, err
 }
