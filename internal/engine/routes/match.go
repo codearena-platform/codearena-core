@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/codearena-platform/codearena-core/internal/engine/services"
 	pb "github.com/codearena-platform/codearena-core/pkg/api/v1"
@@ -11,13 +12,21 @@ import (
 
 func (s *SimulationServer) StartSimulation(ctx context.Context, cfg *pb.ArenaConfig) (*pb.SimulationResponse, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.loop != nil {
 		s.loop.Stop()
 	}
+	s.engine.SetStatus(pb.MatchStatus_RUNNING)
+	if db := s.engine.DB; db != nil {
+		if err := db.SetMatchStatus(s.engine.GetMatchID(), runningStatus); err != nil {
+			s.engine.SetStatus(pb.MatchStatus_WAITING)
+			return nil, fmt.Errorf("mark match running: %w", err)
+		}
+	}
+
 	loop := services.NewGameLoop(s.engine, s.TickRate, s.BroadcastState)
 	s.loop = loop
-	s.mu.Unlock()
-
 	loop.Start()
 	return &pb.SimulationResponse{Status: pb.MatchStatus_RUNNING}, nil
 }
@@ -29,6 +38,16 @@ func (s *SimulationServer) StopSimulation(ctx context.Context, req *pb.StopSimul
 	s.mu.Unlock()
 	if loop != nil {
 		loop.Stop()
+		<-loop.Done()
+	}
+	botCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s.engine.StopManagedBots(botCtx)
+	s.engine.SetStatus(pb.MatchStatus_FINISHED)
+	if db := s.engine.DB; db != nil {
+		if err := db.SetMatchStatus(s.engine.GetMatchID(), finishedStatus); err != nil {
+			return nil, fmt.Errorf("mark match finished: %w", err)
+		}
 	}
 	return &pb.SimulationResponse{Status: pb.MatchStatus_FINISHED}, nil
 }
@@ -64,13 +83,10 @@ func (s *SimulationServer) WatchMatch(req *pb.MatchRequest, stream pb.MatchServi
 }
 
 func (s *SimulationServer) ListActiveMatches(ctx context.Context, req *pb.Empty) (*pb.MatchList, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	list := &pb.MatchList{}
-	if s.engine.Status == pb.MatchStatus_RUNNING {
+	if s.engine.GetStatus() == pb.MatchStatus_RUNNING {
 		list.Matches = append(list.Matches, &pb.MatchResponse{
-			MatchId: s.engine.MatchID,
+			MatchId: s.engine.GetMatchID(),
 			Status:  pb.MatchStatus_RUNNING,
 		})
 	}

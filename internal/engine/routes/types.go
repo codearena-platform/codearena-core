@@ -8,6 +8,14 @@ import (
 	pb "github.com/codearena-platform/codearena-core/pkg/api/v1"
 )
 
+// BotRuntimeConfig selects the container image used by runtime-managed bots.
+// The RegisterBot proto has no image field, so images are deployment config.
+type BotRuntimeConfig struct {
+	Image            string
+	ImagesByLanguage map[string]string
+	GameServerURL    string
+}
+
 type SimulationServer struct {
 	pb.UnimplementedBotServiceServer
 	pb.UnimplementedSimulationServiceServer
@@ -18,6 +26,7 @@ type SimulationServer struct {
 	dashboardChannels map[chan *pb.WorldState]bool
 	loop              *services.GameLoop
 	TickRate          time.Duration
+	botRuntime        BotRuntimeConfig
 }
 
 func NewSimulationServer(e *services.SimulationEngine, tickRate time.Duration) *SimulationServer {

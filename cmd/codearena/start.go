@@ -46,6 +46,11 @@ Modes:
   # Hybrid Mode (connects to remote runtime)
   codearena start --runtime-addr=192.168.1.50:50053`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Rebind to this command's flags: engine and start share viper keys.
+		if err := viper.BindPFlags(cmd.Flags()); err != nil {
+			return fmt.Errorf("bind start flags: %w", err)
+		}
+
 		startGrpcPort = viper.GetString("grpc-port")
 		startWebPort = viper.GetString("web-port")
 		startRealtimePort = viper.GetString("realtime-port")

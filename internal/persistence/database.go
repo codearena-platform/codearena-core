@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -35,6 +36,15 @@ func (d *Database) CreateMatch(match *Match) error {
 
 func (d *Database) UpdateMatch(match *Match) error {
 	return d.db.Save(match).Error
+}
+
+// SetMatchStatus updates only the status column so it cannot overwrite other
+// match fields (winner, timestamps) written by the tick loop.
+func (d *Database) SetMatchStatus(matchID, status string) error {
+	if d == nil || strings.TrimSpace(matchID) == "" {
+		return nil
+	}
+	return d.db.Model(&Match{}).Where("id = ?", matchID).Update("status", status).Error
 }
 
 func (d *Database) UpsertBot(bot *Bot) error {

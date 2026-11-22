@@ -44,3 +44,20 @@ func TestGameLoopStoppedBeforeStart(t *testing.T) {
 		t.Fatal("game loop should exit immediately when stopped before Run")
 	}
 }
+
+func TestGameLoopStopBeforeStartClosesDone(t *testing.T) {
+	engine := NewSimulationEngine(800, 600, nil)
+	loop := NewGameLoop(engine, time.Millisecond, nil)
+	loop.Stop()
+
+	select {
+	case <-loop.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Done was not closed when an unstarted loop was stopped")
+	}
+
+	loop.Start() // must not spawn a goroutine after Stop
+	if engine.GetStatus() == pb.MatchStatus_RUNNING {
+		t.Error("stopped loop was started")
+	}
+}
