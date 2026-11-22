@@ -38,9 +38,9 @@ func (gl *GameLoop) Run() {
 		case <-gl.StopChan:
 			return
 		case <-gl.Ticker.C:
-			if gl.Engine.Status == pb.MatchStatus_RUNNING {
-				if gl.Engine.CurrentTick%60 == 0 {
-					slog.Debug("GameLoop Tick", "tick", gl.Engine.CurrentTick, "bots_count", len(gl.Engine.Bots))
+			if gl.Engine.GetStatus() == pb.MatchStatus_RUNNING {
+				if tick := gl.Engine.GetTick(); tick%60 == 0 {
+					slog.Debug("GameLoop Tick", "tick", tick, "bots_count", gl.Engine.GetAliveCount())
 				}
 				state := gl.Engine.Tick()
 
@@ -49,7 +49,7 @@ func (gl *GameLoop) Run() {
 					gl.Broadcast(state)
 				}
 
-				if gl.Engine.Status == pb.MatchStatus_FINISHED {
+				if gl.Engine.IsFinished() {
 					return
 				}
 			}
@@ -58,7 +58,7 @@ func (gl *GameLoop) Run() {
 }
 
 func (gl *GameLoop) Start() {
-	gl.Engine.Status = pb.MatchStatus_RUNNING
+	gl.Engine.SetStatus(pb.MatchStatus_RUNNING)
 	go gl.Run()
 }
 

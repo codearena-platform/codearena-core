@@ -7,61 +7,108 @@ import (
 	"github.com/codearena-platform/codearena-core/internal/persistence"
 	pb "github.com/codearena-platform/codearena-core/pkg/api/v1"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
-// Tick executes a single simulation step
+// Tick executes a single simulation step. Shared state is read and written
+// under the engine lock; physics receives deep snapshots so a concurrent
+// SetBotIntent or SetBot can never race with the simulation step.
 func (e *SimulationEngine) Tick() *pb.WorldState {
+	e.mu.Lock()
 	e.CurrentTick++
+	tick := e.CurrentTick
+	currentState := e.snapshotStateLocked(tick - 1)
+	intents := e.snapshotIntentsLocked()
+	e.mu.Unlock()
 
-	e.mu.RLock()
-	// 1. Prepare Current World State Snapshot for Physics
-	currentState := &pb.WorldState{
-		Tick:    e.CurrentTick - 1,
-		Bots:    e.getBotSliceInternal(),
-		Bullets: e.Bullets,
-		Zone:    e.Zone,
-		Events:  nil,
-	}
-	e.mu.RUnlock()
-
-	// 2. Physics Update
-	newState := e.Physics.Update(currentState, e.ArenaConfig, e.Intents)
-
-	// 3. Update Engine State
+	newState := e.Physics.Update(currentState, e.ArenaConfig, intents)
 	e.updateFromState(newState)
-
-	// 4. Handle Higher Level Game Logic
 	e.checkWinCondition()
+	e.persistEvents()
 
-	// 6. Persist Events to DB
-	if e.DB != nil && len(e.Events) > 0 {
-		matchID := e.MatchID
-		if matchID == "" {
-			matchID = "default-match"
-		}
-		dbEvents := make([]persistence.EventLog, 0, len(e.Events))
-		for _, ev := range e.Events {
-			payload, _ := protojson.Marshal(ev)
-			dbEvents = append(dbEvents, persistence.EventLog{
-				MatchID: matchID,
-				Tick:    ev.Tick,
-				Type:    eventLogType(ev),
-				Payload: string(payload),
-			})
-		}
-		e.DB.SaveEvents(dbEvents)
-	}
-
-	// 7. Get final state for return
 	state := e.GetWorldState()
 
-	// 8. Clear events and intents for next tick
 	e.mu.Lock()
 	e.Events = make([]*pb.SimulationEvent, 0)
 	e.Intents = make(map[string]*pb.BotIntent)
 	e.mu.Unlock()
 
 	return state
+}
+
+func (e *SimulationEngine) snapshotStateLocked(tick int64) *pb.WorldState {
+	bots := e.getBotSliceInternal()
+	clonedBots := make([]*pb.BotState, 0, len(bots))
+	for _, bot := range bots {
+		if bot != nil {
+			clonedBots = append(clonedBots, proto.Clone(bot).(*pb.BotState))
+		}
+	}
+
+	bullets := make([]*pb.BulletState, 0, len(e.Bullets))
+	for _, bullet := range e.Bullets {
+		if bullet != nil {
+			bullets = append(bullets, proto.Clone(bullet).(*pb.BulletState))
+		}
+	}
+
+	var zone *pb.ZoneState
+	if e.Zone != nil {
+		zone = proto.Clone(e.Zone).(*pb.ZoneState)
+	}
+
+	return &pb.WorldState{
+		Tick:    tick,
+		Bots:    clonedBots,
+		Bullets: bullets,
+		Zone:    zone,
+	}
+}
+
+func (e *SimulationEngine) snapshotIntentsLocked() map[string]*pb.BotIntent {
+	intents := make(map[string]*pb.BotIntent, len(e.Intents))
+	for botID, intent := range e.Intents {
+		if intent == nil {
+			intents[botID] = nil
+			continue
+		}
+		intents[botID] = proto.Clone(intent).(*pb.BotIntent)
+	}
+	return intents
+}
+
+func (e *SimulationEngine) persistEvents() {
+	if e.DB == nil {
+		return
+	}
+
+	e.mu.RLock()
+	matchID := e.MatchID
+	dbEvents := make([]persistence.EventLog, 0, len(e.Events))
+	for _, ev := range e.Events {
+		if ev == nil {
+			continue
+		}
+		payload, _ := protojson.Marshal(ev)
+		dbEvents = append(dbEvents, persistence.EventLog{
+			MatchID: matchID,
+			Tick:    ev.Tick,
+			Type:    eventLogType(ev),
+			Payload: string(payload),
+		})
+	}
+	e.mu.RUnlock()
+
+	if len(dbEvents) == 0 {
+		return
+	}
+	if matchID == "" {
+		matchID = "default-match"
+		for i := range dbEvents {
+			dbEvents[i].MatchID = matchID
+		}
+	}
+	_ = e.DB.SaveEvents(dbEvents)
 }
 
 // eventLogType returns a stable identifier for a simulated event. Go type names
@@ -119,8 +166,16 @@ func (e *SimulationEngine) updateFromState(newState *pb.WorldState) {
 	// 1. Create a set of alive bot IDs for reconciliation
 	aliveBots := make(map[string]bool)
 	for _, b := range newState.Bots {
+		if b == nil {
+			continue
+		}
 		aliveBots[b.Id] = true
 		e.Bots[b.Id] = b // Update existing/new bots
+		name := b.Name
+		if name == "" {
+			name = b.Id
+		}
+		e.participants[b.Id] = name
 	}
 
 	// 2. Remove bots that are no longer in the physics state
@@ -151,52 +206,141 @@ func (e *SimulationEngine) GetWorldState() *pb.WorldState {
 	}
 }
 
+type botResult struct {
+	name   string
+	kills  int
+	deaths int
+	wins   int
+}
+
+func (e *SimulationEngine) sortedParticipantsLocked() []string {
+	ids := make([]string, 0, len(e.participants))
+	for id := range e.participants {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// determineWinnerLocked finishes a match as soon as one bot survives. If every
+// participant died, the bot with the most recorded kills wins; a draw has no
+// winner. It returns false while the match has no entrants or several survivors.
+func (e *SimulationEngine) determineWinnerLocked() (string, bool) {
+	alive := make([]string, 0, len(e.Bots))
+	for id := range e.Bots {
+		alive = append(alive, id)
+	}
+	sort.Strings(alive)
+
+	switch len(alive) {
+	case 1:
+		return alive[0], true
+	case 0:
+		if len(e.participants) == 0 {
+			return "", false
+		}
+		kills := map[string]int{}
+		for _, ev := range e.Events {
+			if death := ev.GetDeath(); death != nil && death.KillerId != "" {
+				kills[death.KillerId]++
+			}
+		}
+		winner := ""
+		best := 0
+		for _, id := range e.sortedParticipantsLocked() {
+			if kills[id] > best {
+				best = kills[id]
+				winner = id
+			}
+		}
+		return winner, true
+	default:
+		return "", false
+	}
+}
+
+func (e *SimulationEngine) botResultsLocked(winnerID string) map[string]botResult {
+	results := make(map[string]botResult, len(e.participants))
+	for id, name := range e.participants {
+		results[id] = botResult{name: name}
+	}
+	for _, ev := range e.Events {
+		death := ev.GetDeath()
+		if death == nil {
+			continue
+		}
+		if result, ok := results[death.BotId]; ok {
+			result.deaths++
+			results[death.BotId] = result
+		}
+		if death.KillerId != "" {
+			if result, ok := results[death.KillerId]; ok {
+				result.kills++
+				results[death.KillerId] = result
+			}
+		}
+	}
+	if result, ok := results[winnerID]; ok {
+		result.wins++
+		results[winnerID] = result
+	}
+	return results
+}
+
 func (e *SimulationEngine) checkWinCondition() {
+	e.mu.Lock()
 	if e.Status != pb.MatchStatus_RUNNING {
+		e.mu.Unlock()
+		return
+	}
+	winnerID, finished := e.determineWinnerLocked()
+	if !finished {
+		e.mu.Unlock()
 		return
 	}
 
-	aliveCount := len(e.Bots)
-	if aliveCount == 0 && e.CurrentTick > 1000 {
-		e.Status = pb.MatchStatus_FINISHED
-		now := time.Now()
+	now := time.Now()
+	matchID := e.MatchID
+	if matchID == "" {
+		matchID = "match-" + now.Format("20060102-150405")
+	}
+	e.Status = pb.MatchStatus_FINISHED
+	e.Events = append(e.Events, &pb.SimulationEvent{
+		Tick: e.CurrentTick,
+		Event: &pb.SimulationEvent_MatchFinished{
+			MatchFinished: &pb.MatchFinishedEvent{WinnerId: winnerID},
+		},
+	})
+	match := &persistence.Match{
+		ID:          matchID,
+		Status:      "FINISHED",
+		WinnerID:    winnerID,
+		ArenaWidth:  e.ArenaConfig.Width,
+		ArenaHeight: e.ArenaConfig.Height,
+		CreatedAt:   now.Add(-time.Duration(e.CurrentTick) * 16 * time.Millisecond),
+		FinishedAt:  &now,
+	}
+	results := e.botResultsLocked(winnerID)
+	participantIDs := e.sortedParticipantsLocked()
+	e.mu.Unlock()
 
-		matchID := e.MatchID
-		if matchID == "" {
-			matchID = "match-" + now.Format("20060102-150405")
+	if e.DB == nil {
+		return
+	}
+	_ = e.DB.CreateMatch(match)
+	for _, id := range participantIDs {
+		result := results[id]
+		name := result.name
+		if name == "" {
+			name = id
 		}
-
-		e.Events = append(e.Events, &pb.SimulationEvent{
-			Tick: e.CurrentTick,
-			Event: &pb.SimulationEvent_MatchFinished{
-				MatchFinished: &pb.MatchFinishedEvent{},
-			},
+		_ = e.DB.UpsertBot(&persistence.Bot{
+			ID:     id,
+			Name:   name,
+			Image:  "unknown",
+			Wins:   result.wins,
+			Kills:  result.kills,
+			Deaths: result.deaths,
 		})
-
-		// Persistence Logic
-		if e.DB != nil {
-			match := &persistence.Match{
-				ID:          matchID,
-				Status:      "FINISHED",
-				ArenaWidth:  e.ArenaConfig.Width,
-				ArenaHeight: e.ArenaConfig.Height,
-				CreatedAt:   now.Add(-time.Duration(e.CurrentTick) * 16 * time.Millisecond),
-				FinishedAt:  &now,
-			}
-			e.DB.CreateMatch(match)
-
-			// Record stats for all participating bots (even dead ones)
-			// Assuming e.Bots only contains ALIVE bots.
-			// We need to track all bots that were in the match.
-			// For now, let's just record for the bots currently in the map.
-			for id, bot := range e.Bots {
-				e.DB.UpsertBot(&persistence.Bot{
-					ID:    id,
-					Name:  bot.Id, // Fallback
-					Image: "unknown",
-				})
-				// If aliveCount was 1, we could determine a winner.
-			}
-		}
 	}
 }

@@ -112,7 +112,7 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 		}
 
 		if updatedRobot.Hull <= 0 {
-			pe.processDeath(updatedRobot, newState)
+			pe.processDeath(updatedRobot, newState, "")
 			continue
 		}
 
@@ -163,7 +163,7 @@ func (pe *PhysicsEngine) Update(state *pb.WorldState, arenaConfig *pb.ArenaConfi
 				})
 
 				if updatedRobot.Hull <= 0 {
-					pe.processDeath(updatedRobot, newState)
+					pe.processDeath(updatedRobot, newState, bullet.OwnerId)
 					delete(activeRobotsMap, updatedRobot.Id)
 				}
 				hit = true
@@ -436,13 +436,14 @@ func (pe *PhysicsEngine) updateRobot(robot *pb.BotState, arena *pb.ArenaConfig, 
 	return newRobot
 }
 
-func (pe *PhysicsEngine) processDeath(robot *pb.BotState, newState *pb.WorldState) {
+func (pe *PhysicsEngine) processDeath(robot *pb.BotState, newState *pb.WorldState, killerID string) {
 	log.Printf("DEATH: Robot %s destroyed at Tick %d", robot.Id, newState.Tick)
 	newState.Events = append(newState.Events, &pb.SimulationEvent{
 		Tick: newState.Tick,
 		Event: &pb.SimulationEvent_Death{
 			Death: &pb.DeathEvent{
-				BotId: robot.Id,
+				BotId:    robot.Id,
+				KillerId: killerID,
 			},
 		},
 	})
