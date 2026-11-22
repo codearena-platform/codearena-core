@@ -54,8 +54,10 @@ func (s *SimulationServer) HandleDashboardWS(w http.ResponseWriter, r *http.Requ
 
 	defer func() {
 		s.mu.Lock()
-		delete(s.dashboardChannels, ch)
-		close(ch)
+		if s.dashboardChannels[ch] {
+			delete(s.dashboardChannels, ch)
+			close(ch)
+		}
 		s.mu.Unlock()
 	}()
 

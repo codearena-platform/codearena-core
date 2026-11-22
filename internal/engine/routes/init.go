@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/codearena-platform/codearena-core/internal/engine/services"
@@ -18,8 +19,12 @@ import (
 // Servers owns the engine's gRPC and dashboard HTTP servers so callers can
 // observe serve errors and shut both down deterministically.
 type Servers struct {
-	GRPC *grpc.Server
-	HTTP *http.Server
+	GRPC       *grpc.Server
+	HTTP       *http.Server
+	Simulation *SimulationServer
+
+	mu       sync.Mutex
+	shutdown bool
 }
 
 func NewServers(e *services.SimulationEngine, tickRate time.Duration) *Servers {
@@ -33,7 +38,7 @@ func NewServers(e *services.SimulationEngine, tickRate time.Duration) *Servers {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", srv.HandleDashboardWS)
 
-	return &Servers{GRPC: grpcSrv, HTTP: newWebServer(mux)}
+	return &Servers{GRPC: grpcSrv, HTTP: newWebServer(mux), Simulation: srv}
 }
 
 func newWebServer(handler http.Handler) *http.Server {
@@ -47,8 +52,18 @@ func newWebServer(handler http.Handler) *http.Server {
 	}
 }
 
-// Serve blocks until either server fails, then stops both.
+// Serve blocks until either server fails or Shutdown is called, then stops both.
 func (s *Servers) Serve(grpcAddr, webAddr string) error {
+	// A shutdown may be requested before Serve gets a chance to bind (for
+	// example when the parent context is already canceled). Do not bind
+	// listeners after Shutdown has run.
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
 	grpcLis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		return fmt.Errorf("gRPC listener failed on %s: %w", grpcAddr, err)
@@ -61,6 +76,15 @@ func (s *Servers) Serve(grpcAddr, webAddr string) error {
 	defer webLis.Close()
 	defer s.GRPC.Stop()
 	defer s.HTTP.Close()
+
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		grpcLis.Close()
+		webLis.Close()
+		return nil
+	}
+	s.mu.Unlock()
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -81,9 +105,31 @@ func (s *Servers) Serve(grpcAddr, webAddr string) error {
 	return <-errCh
 }
 
+// Shutdown stops the simulation loop, then drains gRPC with a bounded
+// GracefulStop and shuts the HTTP server down. If the context expires before
+// in-flight RPCs finish, the gRPC server is force-stopped.
 func (s *Servers) Shutdown(ctx context.Context) error {
-	s.GRPC.Stop()
-	if err := s.HTTP.Shutdown(ctx); err != nil {
+	s.mu.Lock()
+	s.shutdown = true
+	s.mu.Unlock()
+
+	if s.Simulation != nil {
+		s.Simulation.Shutdown()
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		s.GRPC.GracefulStop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		s.GRPC.Stop()
+		<-stopped
+	}
+
+	if err := s.HTTP.Shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("web server shutdown failed: %w", err)
 	}
 	return nil

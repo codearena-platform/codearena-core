@@ -102,6 +102,12 @@ func (s *RuntimeService) StopBot(ctx context.Context, req *pb.StopBotRequest) (*
 	return &pb.StopBotResponse{Success: true}, nil
 }
 
+// Shutdown stops every container managed by this runtime. It is called when
+// the runtime gRPC server drains so no bot container is orphaned on SIGTERM.
+func (s *RuntimeService) Shutdown(ctx context.Context) {
+	s.scheduler.Shutdown(ctx)
+}
+
 func (s *RuntimeService) GetRuntimeStats(ctx context.Context, req *pb.Empty) (*pb.RuntimeStats, error) {
 	active := s.scheduler.GetActiveCount()
 	return &pb.RuntimeStats{

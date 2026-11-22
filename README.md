@@ -106,6 +106,17 @@ WebSocket clients must send `Authorization: Bearer <JWT>`; query-string tokens
 are rejected. Tokens must be HS256 and include `exp`, `iss` and `aud`. Browser
 origins must match `WS_ALLOWED_ORIGINS` or the request host.
 
+### Graceful shutdown
+
+`SIGINT`/`SIGTERM` (or a failure in any subsystem) cancels one context shared by
+the engine, embedded realtime and local runtime. Shutdown then stops the game
+loop and closes stream channels, drains gRPC with `GracefulStop` (bounded to 5s
+before a forced `Stop`), shuts down HTTP, waits for every subsystem goroutine,
+and only then closes the SQLite database. The runtime stops every bot container
+it created, and realtime closes its Redis client, pub/sub and watchers. The
+`start` command returns errors to Cobra instead of calling `os.Exit` from a
+goroutine.
+
 ## 🏗️ Architecture
 
 The Core is a unified Go module composed of decoupled services:

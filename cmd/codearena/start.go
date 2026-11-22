@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/codearena-platform/codearena-core/internal/app/core"
@@ -41,7 +45,7 @@ Modes:
 
   # Hybrid Mode (connects to remote runtime)
   codearena start --runtime-addr=192.168.1.50:50053`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		startGrpcPort = viper.GetString("grpc-port")
 		startWebPort = viper.GetString("web-port")
 		startRealtimePort = viper.GetString("realtime-port")
@@ -53,45 +57,61 @@ Modes:
 		startDbPath = viper.GetString("db-path")
 
 		localRuntime, runtimeAddr := determineRuntimeMode(startRuntimeAddr)
+		return startServices(core.Config{
+			GRPCPort:     startGrpcPort,
+			WebPort:      startWebPort,
+			RealtimePort: startRealtimePort,
+			RuntimeAddr:  runtimeAddr,
+			RunRealtime:  true,
+			ArenaWidth:   startArenaWidth,
+			ArenaHeight:  startArenaHeight,
+			TickRate:     startTickRate,
+			RedisAddr:    startRedisAddr,
+			DBPath:       startDbPath,
+		}, localRuntime)
+	},
+}
 
-		var wg sync.WaitGroup
+// startServices owns one cancellable context for the whole process. A failure
+// in any subsystem cancels the others; errors are returned to cobra instead of
+// terminating from a goroutine with os.Exit.
+func startServices(cfg core.Config, localRuntime bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-		if localRuntime {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if err := runtime.Start(runtime.Config{Port: "50053"}); err != nil {
-					slog.Error("Local Runtime Failed", "error", err)
-					os.Exit(1)
-				}
-			}()
-			// Delay slightly to allow runtime port to bind
-			time.Sleep(500 * time.Millisecond)
-		}
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
 
+	if localRuntime {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cfg := core.Config{
-				GRPCPort:     startGrpcPort,
-				WebPort:      startWebPort,
-				RealtimePort: startRealtimePort,
-				RuntimeAddr:  runtimeAddr,
-				RunRealtime:  true,
-				ArenaWidth:   startArenaWidth,
-				ArenaHeight:  startArenaHeight,
-				TickRate:     startTickRate,
-				RedisAddr:    startRedisAddr,
-				DBPath:       startDbPath,
-			}
-			if err := core.Start(cfg); err != nil {
-				slog.Error("Engine Failed", "error", err)
-				os.Exit(1)
+			if err := runtime.StartWithContext(runCtx, runtime.Config{Port: "50053"}); err != nil {
+				errCh <- fmt.Errorf("local runtime: %w", err)
 			}
 		}()
+		// Delay slightly to allow runtime port to bind
+		time.Sleep(500 * time.Millisecond)
+	}
 
-		wg.Wait()
-	},
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := core.StartWithContext(runCtx, cfg); err != nil {
+			errCh <- fmt.Errorf("engine: %w", err)
+		}
+	}()
+
+	var startErr error
+	select {
+	case <-runCtx.Done():
+	case startErr = <-errCh:
+	}
+	cancel()
+	wg.Wait()
+	return startErr
 }
 
 func determineRuntimeMode(addr string) (bool, string) {

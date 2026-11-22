@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -32,41 +33,58 @@ type Config struct {
 	DBPath      string // Path to SQLite database file
 }
 
+// Start runs the core services until a termination signal is received.
 func Start(cfg Config) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return StartWithContext(ctx, cfg)
+}
+
+// StartWithContext runs every subsystem from the same context so a failure in
+// one of them cancels the others. Shutdown order is: simulation loop, gRPC and
+// HTTP servers, wait for all subsystem goroutines, then close the database.
+func StartWithContext(ctx context.Context, cfg Config) error {
 	fmt.Println("==================================================")
 	fmt.Println("   CODEARENA CORE: UNIFIED ENGINE DAEMON   ")
 	fmt.Println("==================================================")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// 0. Initialize Persistence
 	db, err := persistence.NewDatabase(cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize persistence: %w", err)
 	}
-	defer db.Close()
+	dbClosed := false
+	defer func() {
+		if !dbClosed {
+			_ = db.Close()
+		}
+	}()
 
-	// 1. Initialize Simulation Engine
 	// TODO: Pass RuntimeAddr to Engine so it can find the Runtime Service
 	e := services.NewSimulationEngine(cfg.ArenaWidth, cfg.ArenaHeight, db)
 
-	// 2. Start Simulation gRPC & Web
 	servers := routes.NewServers(e, tickRate(cfg.TickRate))
 	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		slog.Info("Starting Simulation Service")
 		if err := servers.Serve(cfg.GRPCPort, cfg.WebPort); err != nil {
 			errCh <- fmt.Errorf("simulation services: %w", err)
 		}
 	}()
 
-	// 3. Start Realtime Service (Optional)
 	if cfg.RunRealtime {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			slog.Info("Starting Realtime Service (Embedded)")
 			// Connects to local Engine GRPC
-			if err := realtime.StartRealtimeWithContext(ctx, cfg.RealtimePort, "localhost"+cfg.GRPCPort, cfg.RedisAddr); err != nil {
+			if err := realtime.StartRealtimeWithContext(runCtx, cfg.RealtimePort, "localhost"+cfg.GRPCPort, cfg.RedisAddr); err != nil {
 				errCh <- fmt.Errorf("embedded realtime service: %w", err)
 			}
 		}()
@@ -75,25 +93,31 @@ func Start(cfg Config) error {
 	slog.Info("Core services are warming up")
 	fmt.Println("[CORE] Press CTRL+C to terminate.")
 
-	// Wait for termination signal or a server failure.
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(stop)
-
 	var serveErr error
 	select {
-	case <-stop:
+	case <-runCtx.Done():
 		slog.Info("Shutdown signal received")
 	case err := <-errCh:
 		serveErr = err
-	case <-ctx.Done():
 	}
+
+	// Cancel first so background subsystems (realtime watchers, subscriptions)
+	// start winding down while the servers are being drained.
 	cancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-	if err := servers.Shutdown(shutdownCtx); err != nil {
-		return err
+	shutdownErr := servers.Shutdown(shutdownCtx)
+
+	wg.Wait()
+
+	if err := db.Close(); err != nil && serveErr == nil && shutdownErr == nil {
+		serveErr = fmt.Errorf("close database: %w", err)
+	}
+	dbClosed = true
+
+	if shutdownErr != nil && serveErr == nil {
+		serveErr = shutdownErr
 	}
 	return serveErr
 }

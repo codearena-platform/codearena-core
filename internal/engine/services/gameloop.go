@@ -15,6 +15,8 @@ type GameLoop struct {
 	Broadcast func(*pb.WorldState)
 	TickRate  time.Duration
 	stopOnce  sync.Once
+	done      chan struct{}
+	doneOnce  sync.Once
 }
 
 func NewGameLoop(engine *SimulationEngine, tickRate time.Duration, broadcast func(*pb.WorldState)) *GameLoop {
@@ -26,12 +28,14 @@ func NewGameLoop(engine *SimulationEngine, tickRate time.Duration, broadcast fun
 		Broadcast: broadcast,
 		StopChan:  make(chan struct{}),
 		TickRate:  tickRate,
+		done:      make(chan struct{}),
 	}
 }
 
 func (gl *GameLoop) Run() {
 	gl.Ticker = time.NewTicker(gl.TickRate)
 	defer gl.Ticker.Stop()
+	defer gl.doneOnce.Do(func() { close(gl.done) })
 
 	for {
 		select {
@@ -66,4 +70,10 @@ func (gl *GameLoop) Start() {
 // goroutine is left blocked on a send to a channel nobody reads anymore.
 func (gl *GameLoop) Stop() {
 	gl.stopOnce.Do(func() { close(gl.StopChan) })
+}
+
+// Done is closed when Run returns. Shutdown uses it to make sure no tick can
+// still be in flight before the engine database is closed.
+func (gl *GameLoop) Done() <-chan struct{} {
+	return gl.done
 }

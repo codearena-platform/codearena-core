@@ -41,8 +41,10 @@ func (s *SimulationServer) WatchMatch(req *pb.MatchRequest, stream pb.MatchServi
 
 	defer func() {
 		s.mu.Lock()
-		delete(s.dashboardChannels, out)
-		close(out)
+		if s.dashboardChannels[out] {
+			delete(s.dashboardChannels, out)
+			close(out)
+		}
 		s.mu.Unlock()
 	}()
 
