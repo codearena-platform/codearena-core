@@ -69,6 +69,16 @@ func (c AuthConfig) ServerOptions() []grpc.ServerOption {
 	}
 }
 
+// UnaryTokenClientInterceptor attaches the shared secret to outgoing Runtime
+// calls. It is installed only when a token is configured, so a misconfigured
+// client fails at startup (AuthConfigFromEnv) rather than calling anonymously.
+func UnaryTokenClientInterceptor(token string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		ctx = metadata.AppendToOutgoingContext(ctx, authorizationHeader, "Bearer "+token)
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
+
 // UnaryTokenInterceptor rejects calls without the configured shared secret.
 // An empty expected token is only possible through the explicit local-dev opt-out.
 func UnaryTokenInterceptor(expected string) grpc.UnaryServerInterceptor {

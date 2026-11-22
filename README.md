@@ -69,8 +69,12 @@ CodeArena Core can be configured via flags or environment variables (12-factor a
 | `JWT_ISSUER` | N/A | `codearena` | Expected JWT issuer |
 | `JWT_AUDIENCE` | N/A | `codearena-clients` | Expected JWT audience |
 | `WS_ALLOWED_ORIGINS` | N/A | *same-origin* | Comma-separated WebSocket origin allowlist |
+| `RUNTIME_ADDR` / `CODEARENA_RUNTIME_ADDR` | `--runtime-addr` | `localhost:50053` (standalone engine) | Runtime gRPC address; empty disables managed bots |
 | `RUNTIME_AUTH_TOKEN` | N/A | *Required* | Shared secret for all Runtime gRPC calls |
 | `RUNTIME_ALLOW_INSECURE` | N/A | `false` | Local-dev only opt-out from the token requirement |
+| `CODEARENA_BOT_IMAGE` | N/A | *unset* | Opt-in container image for `RegisterBot` managed bots |
+| `CODEARENA_BOT_IMAGE_<LANGUAGE>` | N/A | *unset* | Language-specific override, e.g. `CODEARENA_BOT_IMAGE_PYTHON` |
+| `CODEARENA_GAME_SERVER_URL` | N/A | `localhost:50051` | `GAME_SERVER_URL` passed to managed bot containers |
 
 ### Runtime and WebSocket security
 
@@ -105,6 +109,26 @@ local development.
 WebSocket clients must send `Authorization: Bearer <JWT>`; query-string tokens
 are rejected. Tokens must be HS256 and include `exp`, `iss` and `aud`. Browser
 origins must match `WS_ALLOWED_ORIGINS` or the request host.
+
+### Match and bot lifecycle
+
+`MatchService.CreateMatch` validates the arena, persists a `WAITING` match when
+a database is configured and resets the in-process simulation. It refuses to
+reset a running match; stop it first. `StartSimulation` marks the match
+`RUNNING` and `StopSimulation` marks it `FINISHED` and stops any managed bot
+containers.
+
+`MatchService.RegisterBot` requires `user_id` and `name` and a match to exist.
+It returns generated `bot_id`/`version_id` values and registers the bot with
+the engine. `source_code` is accepted but is not persisted by Core v1. When a
+bot image is configured, the engine calls Runtime `StartBot` with the match ID
+and `GAME_SERVER_URL`; without an image, bots are expected to connect directly
+through `BotService.Connect`. The image is deployment configuration because the
+current `RegisterBotRequest` proto has no image field. Runtime-managed
+containers are stopped on `StopSimulation`, on match reset and on shutdown.
+
+The standalone `cmd/engine` binary now uses the same `core.Config`, defaults and
+validation as the CLI; invalid arena dimensions or tick rates fail at startup.
 
 ### Graceful shutdown
 

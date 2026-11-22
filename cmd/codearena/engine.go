@@ -1,8 +1,7 @@
 package main
 
 import (
-	"log/slog"
-	"os"
+	"fmt"
 
 	"github.com/codearena-platform/codearena-core/internal/app/core"
 	"github.com/spf13/cobra"
@@ -40,8 +39,13 @@ This component handles:
 
   # Connect to a remote Runtime service
   codearena engine --runtime-addr=10.0.0.5:50053`,
-	Run: func(cmd *cobra.Command, args []string) {
-		// Sync with viper
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Rebind to this command's flags: both engine and start register the
+		// same viper keys, so the last init would otherwise win.
+		if err := viper.BindPFlags(cmd.Flags()); err != nil {
+			return fmt.Errorf("bind engine flags: %w", err)
+		}
+
 		engineGrpcPort = viper.GetString("grpc-port")
 		engineWebPort = viper.GetString("web-port")
 		engineRealtimePort = viper.GetString("realtime-port")
@@ -65,10 +69,7 @@ This component handles:
 			RedisAddr:    engineRedisAddr,
 			DBPath:       engineDbPath,
 		}
-		if err := core.Start(cfg); err != nil {
-			slog.Error("Engine Failed", "error", err)
-			os.Exit(1)
-		}
+		return core.Start(cfg)
 	},
 }
 

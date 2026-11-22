@@ -14,24 +14,8 @@ import (
 	"github.com/codearena-platform/codearena-core/internal/engine/services"
 	"github.com/codearena-platform/codearena-core/internal/persistence"
 	"github.com/codearena-platform/codearena-core/internal/realtime"
+	"github.com/codearena-platform/codearena-core/internal/runtime"
 )
-
-type Config struct {
-	GRPCPort string
-	WebPort  string
-
-	// Realtime Configuration
-	RunRealtime  bool   // If true, runs Realtime service within this process
-	RealtimePort string // Only used if RunRealtime is true
-
-	RuntimeAddr string // Address of the Runtime Service (e.g. localhost:50052)
-
-	ArenaWidth  float32
-	ArenaHeight float32
-	TickRate    int    // Ticks per second
-	RedisAddr   string // Redis address for horizontal scaling
-	DBPath      string // Path to SQLite database file
-}
 
 // Start runs the core services until a termination signal is received.
 func Start(cfg Config) error {
@@ -44,6 +28,11 @@ func Start(cfg Config) error {
 // one of them cancels the others. Shutdown order is: simulation loop, gRPC and
 // HTTP servers, wait for all subsystem goroutines, then close the database.
 func StartWithContext(ctx context.Context, cfg Config) error {
+	cfg = cfg.WithDefaults()
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid engine configuration: %w", err)
+	}
+
 	fmt.Println("==================================================")
 	fmt.Println("   CODEARENA CORE: UNIFIED ENGINE DAEMON   ")
 	fmt.Println("==================================================")
@@ -62,10 +51,22 @@ func StartWithContext(ctx context.Context, cfg Config) error {
 		}
 	}()
 
-	// TODO: Pass RuntimeAddr to Engine so it can find the Runtime Service
 	e := services.NewSimulationEngine(cfg.ArenaWidth, cfg.ArenaHeight, db)
 
+	if cfg.RuntimeAddr != "" {
+		runtimeClient, err := runtime.NewGRPCClient(cfg.RuntimeAddr)
+		if err != nil {
+			return fmt.Errorf("connect to runtime: %w", err)
+		}
+		e.SetRuntimeClient(runtimeClient)
+	}
+
 	servers := routes.NewServers(e, tickRate(cfg.TickRate))
+	servers.Simulation.SetBotRuntimeConfig(routes.BotRuntimeConfig{
+		Image:            cfg.BotImage,
+		ImagesByLanguage: cfg.BotImages,
+		GameServerURL:    cfg.GameServer,
+	})
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
 

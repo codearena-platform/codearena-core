@@ -15,6 +15,9 @@ type GameLoop struct {
 	Broadcast func(*pb.WorldState)
 	TickRate  time.Duration
 	stopOnce  sync.Once
+	startOnce sync.Once
+	stateMu   sync.Mutex
+	started   bool
 	done      chan struct{}
 	doneOnce  sync.Once
 }
@@ -62,14 +65,34 @@ func (gl *GameLoop) Run() {
 }
 
 func (gl *GameLoop) Start() {
-	gl.Engine.SetStatus(pb.MatchStatus_RUNNING)
-	go gl.Run()
+	gl.startOnce.Do(func() {
+		gl.stateMu.Lock()
+		defer gl.stateMu.Unlock()
+		select {
+		case <-gl.StopChan:
+			// Stop was requested before Start; do not spawn a doomed goroutine.
+			return
+		default:
+		}
+		gl.started = true
+		gl.Engine.SetStatus(pb.MatchStatus_RUNNING)
+		go gl.Run()
+	})
 }
 
 // Stop closes the stop channel so every waiter is released immediately and no
-// goroutine is left blocked on a send to a channel nobody reads anymore.
+// goroutine is left blocked on a send to a channel nobody reads anymore. It also
+// closes Done when the loop was never started, so shutdown cannot hang; when
+// the loop is running, Done is closed by Run after the last tick.
 func (gl *GameLoop) Stop() {
-	gl.stopOnce.Do(func() { close(gl.StopChan) })
+	gl.stateMu.Lock()
+	defer gl.stateMu.Unlock()
+	gl.stopOnce.Do(func() {
+		close(gl.StopChan)
+		if !gl.started {
+			gl.doneOnce.Do(func() { close(gl.done) })
+		}
+	})
 }
 
 // Done is closed when Run returns. Shutdown uses it to make sure no tick can
