@@ -21,8 +21,11 @@ func Start(cfg Config) error {
 	return StartWithContext(ctx, cfg)
 }
 
+// startRealtime is a variable so the CLI can be tested without opening sockets.
+var startRealtime = realtime.StartRealtimeWithContext
+
 func StartWithContext(ctx context.Context, cfg Config) error {
 	// Original cmd/rt main.go: realtime.StartRealtime(":8081", "competition:50052")
 	// We want configurable via flags.
-	return realtime.StartRealtimeWithContext(ctx, cfg.Port, cfg.EngineAddr, cfg.RedisAddr)
+	return startRealtime(ctx, cfg.Port, cfg.EngineAddr, cfg.RedisAddr)
 }

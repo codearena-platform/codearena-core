@@ -41,7 +41,7 @@ $CONTAINER_ENGINE run --rm \
     --go_out=../../../pkg/api/v1 --go_opt=paths=source_relative \
     --go-grpc_out=../../../pkg/api/v1 --go-grpc_opt=paths=source_relative \
     --openapi_out=../../../docs/api \
-    arena.proto bot_api.proto
+    arena.proto bot_api.proto runtime.proto
 
 echo -e "\033[0;32mDone!\033[0m"
 ls -l "$OUT_DIR"

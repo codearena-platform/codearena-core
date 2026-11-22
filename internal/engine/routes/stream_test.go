@@ -158,6 +158,90 @@ func TestStopSimulationStopsGameLoop(t *testing.T) {
 	}
 }
 
+func TestConnectReceivesFilteredBroadcast(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &fakeBotStream{ctx: ctx, recv: make(chan *pb.BotIntent, 1), sent: make(chan *pb.WorldState, 10)}
+	stream.recv <- &pb.BotIntent{}
+
+	server := NewSimulationServer(services.NewSimulationEngine(800, 600, nil), 16)
+	done := make(chan error, 1)
+	go func() { done <- server.Connect(stream) }()
+
+	waitForCondition(t, func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return len(server.botChannels) == 1
+	})
+	server.mu.Lock()
+	var botID string
+	for id := range server.botChannels {
+		botID = id
+	}
+	server.mu.Unlock()
+
+	server.BroadcastState(&pb.WorldState{
+		Tick:   42,
+		Status: pb.MatchStatus_RUNNING,
+		Bots: []*pb.BotState{
+			{Id: botID, Name: botID, Position: &pb.Vector3{X: 100, Y: 100}},
+			{Id: "other", Name: "other", Position: &pb.Vector3{X: 9000, Y: 9000}},
+		},
+	})
+
+	select {
+	case state := <-stream.sent:
+		if state.Tick != 42 {
+			t.Errorf("received tick = %d, want 42", state.Tick)
+		}
+		if len(state.Bots) != 1 || state.Bots[0].Id != botID {
+			t.Errorf("filtered bots = %+v, want only the viewer", state.Bots)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bot stream did not receive a broadcast")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Connect did not return after cancel")
+	}
+}
+
+func TestWatchMatchReceivesBroadcast(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &fakeWatchStream{ctx: ctx, sent: make(chan *pb.WorldState, 10)}
+	server := NewSimulationServer(services.NewSimulationEngine(800, 600, nil), 16)
+
+	done := make(chan error, 1)
+	go func() { done <- server.WatchMatch(&pb.MatchRequest{MatchId: "m"}, stream) }()
+
+	waitForCondition(t, func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return len(server.dashboardChannels) == 1
+	})
+
+	server.BroadcastState(&pb.WorldState{Tick: 7, Status: pb.MatchStatus_RUNNING})
+	select {
+	case state := <-stream.sent:
+		if state.Tick != 7 {
+			t.Errorf("received tick = %d, want 7", state.Tick)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dashboard stream did not receive a broadcast")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("WatchMatch did not return after cancel")
+	}
+}
+
 func TestNewWebServerTimeouts(t *testing.T) {
 	srv := newWebServer(http.NewServeMux())
 	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.WriteTimeout <= 0 || srv.IdleTimeout <= 0 {
