@@ -34,3 +34,13 @@ type EventLog struct {
 	Type    string
 	Payload string // JSON
 }
+
+// Stable event type identifiers stored in EventLog.Type. Use these constants
+// instead of Go type names (which change with the generated protobuf package).
+const (
+	EventTypeDeath         = "simulation_event_death"
+	EventTypeMatchFinished = "simulation_event_match_finished"
+)
+
+// HighlightEventTypes are the event types shown in match replays.
+var HighlightEventTypes = []string{EventTypeDeath, EventTypeMatchFinished}

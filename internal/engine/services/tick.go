@@ -1,7 +1,6 @@
 package services
 
 import (
-	"fmt"
 	"sort"
 	"time"
 
@@ -46,7 +45,7 @@ func (e *SimulationEngine) Tick() *pb.WorldState {
 			dbEvents = append(dbEvents, persistence.EventLog{
 				MatchID: matchID,
 				Tick:    ev.Tick,
-				Type:    fmt.Sprintf("%T", ev.Event),
+				Type:    eventLogType(ev),
 				Payload: string(payload),
 			})
 		}
@@ -63,6 +62,33 @@ func (e *SimulationEngine) Tick() *pb.WorldState {
 	e.mu.Unlock()
 
 	return state
+}
+
+// eventLogType returns a stable identifier for a simulated event. Go type names
+// are not usable here: the generated protobuf package name changes the output of
+// %T and breaks replay highlight queries.
+func eventLogType(ev *pb.SimulationEvent) string {
+	if ev == nil {
+		return "unknown"
+	}
+	switch ev.Event.(type) {
+	case *pb.SimulationEvent_Death:
+		return persistence.EventTypeDeath
+	case *pb.SimulationEvent_MatchFinished:
+		return persistence.EventTypeMatchFinished
+	case *pb.SimulationEvent_HitByBullet:
+		return "hit_by_bullet"
+	case *pb.SimulationEvent_BulletHitTarget:
+		return "bullet_hit_target"
+	case *pb.SimulationEvent_HitWall:
+		return "hit_wall"
+	case *pb.SimulationEvent_HitRobot:
+		return "hit_robot"
+	case *pb.SimulationEvent_ZoneEntered:
+		return "zone_entered"
+	default:
+		return "unknown"
+	}
 }
 
 func (e *SimulationEngine) getBotSliceInternal() []*pb.BotState {

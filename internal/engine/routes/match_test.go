@@ -19,7 +19,7 @@ func TestSimulationServer_GetMatchHighlights(t *testing.T) {
 	matchID := "match-1"
 	// Seed some events
 	db.SaveEvents([]persistence.EventLog{
-		{MatchID: matchID, Tick: 10, Type: "*pb.SimulationEvent_Death", Payload: `{"death":{"bot_id":"bot1","killer_id":"bot2"}}`},
+		{MatchID: matchID, Tick: 10, Type: persistence.EventTypeDeath, Payload: `{"death":{"bot_id":"bot1","killer_id":"bot2"}}`},
 	})
 
 	resp, err := s.GetMatchHighlights(context.Background(), &pb.ReplayRequest{MatchId: matchID})
