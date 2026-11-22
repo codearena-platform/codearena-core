@@ -1,10 +1,280 @@
-# Generated with protoc-gen-openapi
-# https://github.com/google/gnostic/tree/master/cmd/protoc-gen-openapi
-
 openapi: 3.0.3
 info:
-    title: ""
-    version: 0.0.1
-paths: {}
+  title: CodeArena Core API
+  version: "1.0.0"
+  description: |
+    HTTP surface and gRPC contract index for codearena-core.
+
+    The engine exposes one HTTP/WebSocket endpoint (`/ws`) on the web port and
+    four gRPC services. The protobuf files do not declare `google.api.http`
+    annotations, so no REST translations are implied here. Use the `x-grpcServices`
+    extension and the proto sources under `api/proto/v1` for gRPC method details.
+  contact:
+    name: CodeArena Platform
+    url: https://github.com/codearena-platform/codearena-core
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: http://localhost:50052
+    description: Engine dashboard HTTP endpoint (`--web-port`)
+  - url: http://localhost:8081
+    description: Realtime WebSocket endpoint (`--realtime-port`)
+tags:
+  - name: Streaming
+    description: WebSocket streams exposed by Core.
+paths:
+  /ws:
+    get:
+      tags:
+        - Streaming
+      summary: Subscribe to dashboard match state
+      description: |
+        Upgrades to a WebSocket connection and streams full `WorldState`
+        messages. Requires an HS256 bearer JWT in the `Authorization` header;
+        query-string tokens are rejected. Bot streams use the gRPC
+        `BotService.Connect` method instead.
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          description: "Bearer <JWT> with exp, iss and aud claims."
+          schema:
+            type: string
+          example: Bearer eyJhbGciOiJIUzI1NiJ9...
+      responses:
+        "101":
+          description: Switching protocols; full WorldState frames follow.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorldState"
+        "400":
+          description: Missing, malformed or query-string token.
+        "401":
+          description: Invalid signature, issuer, audience or expired token.
+        "403":
+          description: Origin is not in `WS_ALLOWED_ORIGINS`.
+      security:
+        - dashboardBearer: []
 components:
-    schemas: {}
+  securitySchemes:
+    dashboardBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: HS256 JWT validated with `JWT_SECRET`, `JWT_ISSUER` and `JWT_AUDIENCE`.
+  schemas:
+    Vector3:
+      type: object
+      properties:
+        x:
+          type: number
+          format: float
+        y:
+          type: number
+          format: float
+        z:
+          type: number
+          format: float
+    ArenaConfig:
+      type: object
+      required:
+        - width
+        - height
+      properties:
+        id:
+          type: string
+          description: Optional caller-supplied match ID; generated when empty.
+        name:
+          type: string
+        width:
+          type: number
+          format: float
+          minimum: 0
+          exclusiveMinimum: true
+        height:
+          type: number
+          format: float
+          minimum: 0
+          exclusiveMinimum: true
+        obstacles:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              position:
+                $ref: "#/components/schemas/Vector3"
+              radius:
+                type: number
+                format: float
+              indestructible:
+                type: boolean
+        zones:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              position:
+                $ref: "#/components/schemas/Vector3"
+              radius:
+                type: number
+                format: float
+              type:
+                type: string
+                enum: [HEAL, ENERGY, HAZARD]
+              intensity:
+                type: number
+                format: float
+        max_bots:
+          type: integer
+          format: int32
+          minimum: 0
+        match_duration_ticks:
+          type: integer
+          format: int64
+          minimum: 0
+    MatchResponse:
+      type: object
+      properties:
+        match_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/MatchStatus"
+    MatchStatus:
+      type: string
+      enum:
+        - MATCH_STATUS_UNSPECIFIED
+        - WAITING
+        - RUNNING
+        - FINISHED
+    RegisterBotRequest:
+      type: object
+      required:
+        - user_id
+        - name
+      properties:
+        user_id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        source_code:
+          type: string
+          description: Base64 encoded or raw source; accepted but not persisted by Core v1.
+        language:
+          type: string
+          description: Selects `CODEARENA_BOT_IMAGE_<LANGUAGE>` when configured.
+    RegisterBotResponse:
+      type: object
+      properties:
+        bot_id:
+          type: string
+        version_id:
+          type: string
+        success:
+          type: boolean
+        message:
+          type: string
+    SimulationResponse:
+      type: object
+      properties:
+        status:
+          $ref: "#/components/schemas/MatchStatus"
+    WorldState:
+      type: object
+      properties:
+        tick:
+          type: integer
+          format: int64
+        status:
+          $ref: "#/components/schemas/MatchStatus"
+        bots:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              position:
+                $ref: "#/components/schemas/Vector3"
+              hull:
+                type: number
+                format: float
+              energy:
+                type: number
+                format: float
+        events:
+          type: array
+          items:
+            type: object
+x-grpcServices:
+  protoPackage: codearena.v1
+  sources:
+    - api/proto/v1/arena.proto
+    - api/proto/v1/bot_api.proto
+    - api/proto/v1/runtime.proto
+  services:
+    MatchService:
+      address: "--grpc-port (default :50051)"
+      methods:
+        CreateMatch:
+          request: ArenaConfig
+          response: MatchResponse
+          description: Validate the arena, persist a WAITING match and reset simulation state.
+        ListActiveMatches:
+          request: Empty
+          response: MatchList
+        ListMatches:
+          request: Empty
+          response: MatchList
+        WatchMatch:
+          streaming: server
+          request: MatchRequest
+          response: WorldState
+        RegisterBot:
+          request: RegisterBotRequest
+          response: RegisterBotResponse
+          description: Register a bot and optionally start a runtime-managed container.
+        GetMatchReplay:
+          request: ReplayRequest
+          response: ReplayData
+        GetMatchHighlights:
+          request: ReplayRequest
+          response: HighlightsData
+    SimulationService:
+      address: "--grpc-port (default :50051)"
+      methods:
+        StartSimulation:
+          request: ArenaConfig
+          response: SimulationResponse
+        StopSimulation:
+          request: StopSimulationRequest
+          response: SimulationResponse
+    BotService:
+      address: "--grpc-port (default :50051)"
+      methods:
+        Connect:
+          streaming: bidirectional
+          request: BotIntent
+          response: WorldState
+    RuntimeService:
+      address: "--port on codearena runtime (default 50053)"
+      auth: "RUNTIME_AUTH_TOKEN bearer token or x-runtime-token header"
+      methods:
+        StartBot:
+          request: StartBotRequest
+          response: StartBotResponse
+        StopBot:
+          request: StopBotRequest
+          response: StopBotResponse
+        GetRuntimeStats:
+          request: Empty
+          response: RuntimeStats
