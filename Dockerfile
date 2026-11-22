@@ -17,7 +17,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/codearena ./cmd/codearen
 FROM alpine:3.20
 
 # ca-certificates is needed for outbound TLS (OAuth, model downloads, etc.).
-RUN apk --no-cache add ca-certificates \
+# sqlite3 provides the online .backup API used by the infrastructure backup
+# CronJob to take a consistent copy of /data/codearena.db while Core runs.
+RUN apk --no-cache add ca-certificates sqlite \
     && mkdir -p /data \
     && chown -R 65532:65532 /data
 
