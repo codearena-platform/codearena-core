@@ -34,10 +34,13 @@ func (s *SimulationServer) Connect(stream pb.BotService_ConnectServer) error {
 
 	defer func() {
 		// BroadcastState only sends while holding s.mu; deleting first means no
-		// sender can race with closing the channel.
+		// sender can race with closing the channel. Shutdown may have closed the
+		// channel already, so only close it while it is still registered.
 		s.mu.Lock()
-		delete(s.botChannels, botID)
-		close(out)
+		if _, ok := s.botChannels[botID]; ok {
+			delete(s.botChannels, botID)
+			close(out)
+		}
 		s.mu.Unlock()
 	}()
 
