@@ -1,0 +1,10 @@
+# Keep the Core build context limited to files that affect the binary.
+.git
+.github
+.next
+.turbo
+node_modules
+dist
+build
+.pytest_cache
+__pycache__
